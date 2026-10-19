@@ -1,6 +1,11 @@
 // #include "libslic3r/GCodeSender.hpp"
 //#include "slic3r/Utils/Serial.hpp"
 #include "Tab.hpp"
+#include "SupportOverrides.hpp"
+#include "SupportOverrideNotice.hpp"
+#include "PartPlate.hpp"
+#include "Widgets/Button.hpp"
+#include <wx/stattext.h>
 #include "PresetHints.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/PresetFlowVariant.hpp"
@@ -2904,6 +2909,35 @@ void TabPrint::build()
     page = add_options_page(L("Support"), "custom-gcode_support"); // ORCA: icon only visible on placeholders
         optgroup = page->new_optgroup(L("Support"), L"param_support");
     optgroup->append_single_option_line("enable_support", "support_settings_support");
+        if (m_type == Preset::TYPE_PRINT) {
+            Line notice_line{wxEmptyString, wxEmptyString};
+            notice_line.full_width = 1;
+            notice_line.widget = [this](wxWindow *parent) {
+                auto *panel = new SupportOverrideNotice(parent, [this] {
+                    return m_config && !m_config->opt_bool("enable_support") &&
+                           has_enabled_support_overrides(wxGetApp().model());
+                });
+                m_support_override_notice = panel;
+                auto *text = new wxStaticText(panel, wxID_ANY,
+                    _L("Global support is off, but object settings still enable support."));
+                text->Wrap(parent->FromDIP(250));
+                auto *button = new Button(panel, _L("Disable object support overrides"));
+                button->SetStyle(ButtonStyle::Regular, ButtonType::Parameter);
+                button->SetToolTip(_L("Use the disabled global support setting for all objects in this project. Support painting, rafts, enforced support layers and unrelated settings are kept."));
+                auto *contents = new wxBoxSizer(wxVERTICAL);
+                contents->Add(text, 0, wxEXPAND | wxBOTTOM, parent->FromDIP(5));
+                contents->Add(button, 0);
+                panel->SetSizer(contents);
+                wxGetApp().UpdateDarkUI(panel);
+                wxGetApp().UpdateDarkUI(text);
+                button->Bind(wxEVT_BUTTON, [this](wxCommandEvent &) { disable_object_support_overrides(); });
+                auto *sizer = new wxBoxSizer(wxVERTICAL);
+                sizer->Add(panel, 0, wxEXPAND);
+                refresh_support_override_notice();
+                return sizer;
+            };
+            optgroup->append_line(notice_line);
+        }
         optgroup->append_single_option_line("support_type", "support_settings_support#type");
         optgroup->append_single_option_line("support_style", "support_settings_support#style");
         optgroup->append_single_option_line("support_threshold_angle", "support_settings_support#threshold-angle");
@@ -3125,16 +3159,55 @@ optgroup->append_single_option_line("skirt_loops", "others_settings_skirt#loops"
 }
 
 // Reload current config (aka presets->edited_preset->config) into the UI fields.
+void TabPrint::refresh_support_override_notice()
+{
+    if (m_type != Preset::TYPE_PRINT || !m_support_override_notice || !m_config)
+        return;
+    const bool show = !m_config->opt_bool("enable_support") &&
+                      has_enabled_support_overrides(wxGetApp().model());
+    if (m_support_override_notice->IsShown() != show) {
+        m_support_override_notice->Show(show);
+        m_support_override_notice->GetParent()->Layout();
+    }
+}
+
+void TabPrint::disable_object_support_overrides()
+{
+    auto *plater = wxGetApp().plater();
+    if (!plater || !m_config || m_config->opt_bool("enable_support"))
+        return;
+    auto &model = wxGetApp().model();
+    if (!has_enabled_support_overrides(model))
+        return;
+
+    plater->take_snapshot(_L("Disable object support overrides").ToStdString(wxConvUTF8));
+    clear_enabled_support_overrides(model);
+    for (ModelObject *object : model.objects)
+        wxGetApp().obj_list()->object_config_options_changed({object, nullptr});
+    if (auto *object_tab = dynamic_cast<TabPrintModel *>(wxGetApp().get_model_tab()))
+        object_tab->update_model_config();
+    wxGetApp().params_panel()->notify_object_config_changed();
+
+    // The action covers the whole project, including plates not currently active.
+    for (auto *plate : plater->get_partplate_list().get_plate_list())
+        plate->update_slice_result_valid_state(false);
+    wxGetApp().mainframe->on_config_changed(m_config);
+    plater->schedule_background_process();
+    refresh_support_override_notice();
+}
+
 void TabPrint::reload_config()
 {
     refresh_flow_variant_view();
     this->compatible_widget_reload(m_compatible_printers);
     Tab::reload_config();
+    refresh_support_override_notice();
 }
 
 void TabPrint::update_description_lines()
 {
     Tab::update_description_lines();
+    refresh_support_override_notice();
 
     if (m_preset_bundle->printers.get_selected_preset().printer_technology() == ptSLA)
         return;
@@ -3287,6 +3360,7 @@ void TabPrint::update()
 
 void TabPrint::clear_pages()
 {
+    m_support_override_notice = nullptr;
     Tab::clear_pages();
 
     m_recommended_thin_wall_thickness_description_line = nullptr;
@@ -4197,17 +4271,16 @@ void TabFilament::build()
         optgroup->append_single_option_line("pressure_advance", "pressure-advance-calib");
 
         // Orca: adaptive pressure advance and calibration model
-        // Snapmaker: hidden from UI per product requirement; config and slicing logic are kept
-        // optgroup->append_single_option_line("adaptive_pressure_advance", "adaptive-pressure-advance-calib");
-        // optgroup->append_single_option_line("adaptive_pressure_advance_overhangs", "adaptive-pressure-advance-calib");
-        // optgroup->append_single_option_line("adaptive_pressure_advance_bridges", "adaptive-pressure-advance-calib");
-        //
-        // Option option = optgroup->get_option("adaptive_pressure_advance_model");
-        // option.opt.full_width = true;
-        // option.opt.is_code = true;
-        // option.opt.height = 15;
-        // optgroup->append_single_option_line(option);
-        //
+        optgroup->append_single_option_line("adaptive_pressure_advance", "adaptive-pressure-advance-calib");
+        optgroup->append_single_option_line("adaptive_pressure_advance_overhangs", "adaptive-pressure-advance-calib");
+        optgroup->append_single_option_line("adaptive_pressure_advance_bridges", "adaptive-pressure-advance-calib");
+
+        Option option = optgroup->get_option("adaptive_pressure_advance_model");
+        option.opt.full_width = true;
+        option.opt.is_code = true;
+        option.opt.height = 15;
+        optgroup->append_single_option_line(option);
+
 
         optgroup = page->new_optgroup(L("Print chamber temperature"), L"param_chamber_temp");
         optgroup->append_single_option_line("chamber_temperature", "chamber-temperature");
@@ -4380,7 +4453,7 @@ void TabFilament::build()
             validate_custom_gcode_cb(this, optgroup_title, opt_key, value);
         };
         optgroup->edit_custom_gcode = edit_custom_gcode_fn;
-        Option option = optgroup->get_option("filament_start_gcode");
+        option = optgroup->get_option("filament_start_gcode");
         option.opt.full_width = true;
         option.opt.is_code = true;
         option.opt.height = gcode_field_height;// 150;
@@ -4617,13 +4690,12 @@ void TabFilament::toggle_options()
         // Orca: adaptive pressure advance and calibration model
         // If PA is not enabled, disable adaptive pressure advance and hide the model section
         // If adaptive PA is not enabled, hide the adaptive PA model section
-        // Snapmaker: hidden from UI per product requirement; toggle logic disabled along with the UI lines
-        // toggle_option("adaptive_pressure_advance", pa);
-        // toggle_option("adaptive_pressure_advance_overhangs", pa);
-        // bool has_adaptive_pa = m_config->opt_bool("adaptive_pressure_advance", 0);
-        // toggle_line("adaptive_pressure_advance_overhangs", has_adaptive_pa && pa);
-        // toggle_line("adaptive_pressure_advance_model", has_adaptive_pa && pa);
-        // toggle_line("adaptive_pressure_advance_bridges", has_adaptive_pa && pa);
+        toggle_option("adaptive_pressure_advance", pa);
+        toggle_option("adaptive_pressure_advance_overhangs", pa);
+        bool has_adaptive_pa = m_config->opt_bool("adaptive_pressure_advance", 0);
+        toggle_line("adaptive_pressure_advance_overhangs", has_adaptive_pa && pa);
+        toggle_line("adaptive_pressure_advance_model", has_adaptive_pa && pa);
+        toggle_line("adaptive_pressure_advance_bridges", has_adaptive_pa && pa);
 
         bool is_pellet_printer = cfg.opt_bool("pellet_modded_printer");
         toggle_line("pellet_flow_coefficient", is_pellet_printer);
