@@ -5410,8 +5410,9 @@ void PrintConfigDef::init_fff_params()
     def->category = L("Support");
     def->tooltip = L("Normal (auto) and Tree (auto) are used to generate support automatically. "
                      "If Normal (manual) or Tree (manual) is selected, only support enforcers are generated.\n"
-                     "Fins are thin breakaway walls standing beside the object wherever the object hangs over the bed, "
-                     "fused to it by single-layer tines. They hold parts printed tilted onto an edge. The overhang threshold applies only "
+                     "Fins are thin breakaway walls standing on the bed under the object's overhangs, fused to it by single-layer tines: "
+                     "rows across each overhang, a rail along each side of long parts, and rim walls under flat ledges. Small holes are left to bridge. "
+                     "They hold parts printed tilted onto an edge or lying on their side. The overhang threshold applies only "
                      "to supplemental tree or normal supports when Fins is selected.");
     def->enum_keys_map = &ConfigOptionEnum<SupportType>::get_enum_values();
     def->enum_values.push_back("normal(auto)");
@@ -5751,7 +5752,8 @@ void PrintConfigDef::init_fff_params()
     def = this->add("support_fin_spacing", coFloat);
     def->label = L("Fin spacing");
     def->category = L("Support");
-    def->tooltip = L("Distance between neighboring fins. Fins are oriented automatically to cross the edge the object leans over.");
+    def->tooltip = L("Distance between neighboring rows of fins. Rows run across the long axis of each area under the object; "
+                     "a row shorter than 4 mm is left out.");
     def->sidetext = L("mm");	// millimeters, CIS languages need translation
     def->min = 1;
     def->mode = comAdvanced;
@@ -5827,7 +5829,7 @@ void PrintConfigDef::init_fff_params()
     def                = this->add("support_fin_fallback", coEnum);
     def->label         = L("Supplemental supports");
     def->category      = L("Support");
-    def->tooltip       = L("Add supports in regions the fins cannot reach. Tree uses organic branches; Normal uses grid or snug supports. "
+    def->tooltip       = L("Add supports to overhangs the fins do not hold: more than 2 mm from a fin, and not bridged between two. Tree uses organic branches; Normal uses grid or snug supports. "
                            "Regions are assigned to fins or supplemental supports to avoid overlapping structures. "
                            "The overhang threshold and build-plate-only settings apply to supplemental supports. "
                            "Both use the same support filament, interface filament, interface layers, pattern and spacing. "
