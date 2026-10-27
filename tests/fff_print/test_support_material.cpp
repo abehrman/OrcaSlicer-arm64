@@ -779,3 +779,142 @@ TEST_CASE("SupportMaterial: fin attachments use interface material without top d
         CHECK_NOTHROW(Slic3r::Test::gcode(print));
     }
 }
+
+// Slices `mesh` with fins only and the given extra settings.
+static std::unique_ptr<Slic3r::Print> slice_with_fins(const TriangleMesh &mesh, std::initializer_list<Slic3r::ConfigBase::SetDeserializeItem> extra = {})
+{
+    auto print = std::make_unique<Slic3r::Print>();
+    Slic3r::DynamicPrintConfig config = Slic3r::Test::default_print_config();
+    config.set_deserialize_strict({
+        { "enable_support",        1 },
+        { "support_type",          "fins" },
+        { "support_fin_fallback",  "none" },
+        { "layer_height",          0.2 },
+        { "support_fin_thickness", 0.7 },
+    });
+    config.set_deserialize_strict(extra);
+    Slic3r::Test::init_and_process_print({ mesh }, *print, config);
+    return print;
+}
+
+// A part lying along X on the bed needs a long fin on each side, or it rolls or twists off its fins.
+static void check_long_fin_each_side(const PrintObject &object)
+{
+    REQUIRE(! object.support_layers().empty());
+    double area;
+    const double axis_y = area_centroid_y(object.layers().front()->lslices, area);
+    // Rail length along X on each side; rails are cut into pieces that break away, so add them up.
+    double rail[2] = { 0., 0. };
+    double top     = 0.;
+    for (const SupportLayer *layer : object.support_layers()) {
+        top = std::max(top, layer->print_z);
+        // Above the foot, which is wider by design.
+        if (layer->print_z < 1.2)
+            continue;
+        double length[2] = { 0., 0. };
+        for (const ExPolygon &fin : layer->support_islands) {
+            const BoundingBox b = get_extents(fin);
+            if (b.size().x() >= scaled<coord_t>(10.))
+                length[b.center().y() > axis_y ? 1 : 0] += unscale<double>(b.size().x());
+        }
+        rail[0] = std::max(rail[0], length[0]);
+        rail[1] = std::max(rail[1], length[1]);
+    }
+    CAPTURE(rail[0], rail[1], top);
+    CHECK(rail[0] >= 45.);
+    CHECK(rail[1] >= 45.);
+    CHECK(top >= 1.5);
+}
+
+TEST_CASE("SupportMaterial: fin support holds a log lying on the bed with a fin along each side", "[SupportMaterial][Fins]")
+{
+    TriangleMesh log = make_cylinder(5., 60.);
+    log.rotate_y(float(M_PI / 2));
+    log.translate(0, 0, float(- log.bounding_box().min.z()));
+    const auto print = slice_with_fins(log);
+    check_long_fin_each_side(*print->objects().front());
+}
+
+TEST_CASE("SupportMaterial: fin support under a bar on its edge has long side fins and no dashes", "[SupportMaterial][Fins]")
+{
+    TriangleMesh bar = make_cube(60, 10, 10);
+    bar.translate(-30, -5, -5);
+    bar.rotate_x(float(M_PI / 4));
+    bar.translate(0, 0, float(- bar.bounding_box().min.z()));
+    const auto print = slice_with_fins(bar, { { "support_fin_tine_spacing", 0 } });
+    const PrintObject &object = *print->objects().front();
+    check_long_fin_each_side(object);
+    // The lowest layer above the foot: every fin is at least a few millimeters long.
+    const SupportLayer *base = nullptr;
+    for (const SupportLayer *layer : object.support_layers())
+        if (layer->print_z > 1.2)
+            { base = layer; break; }
+    REQUIRE(base != nullptr);
+    for (const ExPolygon &fin : base->support_islands) {
+        const BoundingBox b = get_extents(fin);
+        CAPTURE(unscale<double>(b.size().x()), unscale<double>(b.size().y()));
+        CHECK(unscale<double>(std::max(b.size().x(), b.size().y())) >= 3.);
+    }
+}
+
+TEST_CASE("SupportMaterial: fin support puts a rim wall along each free edge of a ledge", "[SupportMaterial][Fins]")
+{
+    const auto print = slice_with_fins(support_table(), { { "support_fin_tine_spacing", 0 } });
+    const PrintObject &object = *print->objects().front();
+    REQUIRE(! object.support_layers().empty());
+    const BoundingBox slab = get_extents(object.layers().back()->lslices);
+    const coord_t     band = scaled<coord_t>(1.5);
+    // Halfway up the stem.
+    const SupportLayer *mid = nullptr;
+    for (const SupportLayer *layer : object.support_layers())
+        if (layer->print_z > 5.)
+            { mid = layer; break; }
+    REQUIRE(mid != nullptr);
+    const Polygons edges[4] = {
+        { BoundingBox(slab.min, { slab.min.x() + band, slab.max.y() }).polygon() },
+        { BoundingBox({ slab.max.x() - band, slab.min.y() }, slab.max).polygon() },
+        { BoundingBox(slab.min, { slab.max.x(), slab.min.y() + band }).polygon() },
+        { BoundingBox({ slab.min.x(), slab.max.y() - band }, slab.max).polygon() },
+    };
+    for (int e = 0; e < 4; ++ e) {
+        DYNAMIC_SECTION("edge " << e) {
+            const ExPolygons rim = intersection_ex(mid->support_islands, edges[e]);
+            // A wall along most of the 30 mm edge, about 0.8 mm thick.
+            CHECK(area(rim) > scale_(scale_(0.5 * 30. * 0.7)));
+            // Cut into pieces that break away.
+            for (const ExPolygon &piece : rim)
+                CHECK(unscale<double>(get_extents(piece).size().cast<double>().maxCoeff()) <= 40.5);
+        }
+    }
+}
+
+// A 30 x 20 x 20 block with a 5 x 5 mm tunnel through it along X, 7.5 mm above the bed.
+static TriangleMesh tunnel_block()
+{
+    TriangleMesh block = make_cube(30, 20, 7.5);
+    TriangleMesh front = make_cube(30, 7.5, 5); front.translate(0, 0, 7.5);
+    TriangleMesh back  = make_cube(30, 7.5, 5); back.translate(0, 12.5, 7.5);
+    TriangleMesh roof  = make_cube(30, 20, 7.5); roof.translate(0, 0, 12.5);
+    block.merge(front);
+    block.merge(back);
+    block.merge(roof);
+    return block;
+}
+
+TEST_CASE("SupportMaterial: fin support leaves a small tunnel to bridge, even with a fallback", "[SupportMaterial][Fins]")
+{
+    for (const char *fallback : { "none", "tree", "normal" }) {
+        DYNAMIC_SECTION("fallback " << fallback) {
+            const auto print = slice_with_fins(tunnel_block(), { { "support_fin_fallback", fallback } });
+            const PrintObject &object = *print->objects().front();
+            const BoundingBox  block  = get_extents(object.layers().front()->lslices);
+            // The tunnel, in object coordinates.
+            const Polygons tunnel { BoundingBox({ block.min.x(), block.min.y() + scaled<coord_t>(7.5) },
+                                                { block.max.x(), block.min.y() + scaled<coord_t>(12.5) }).polygon() };
+            for (const SupportLayer *layer : object.support_layers()) {
+                CAPTURE(layer->print_z);
+                CHECK(intersection(to_polygons(layer->support_islands), tunnel).empty());
+            }
+        }
+    }
+}

@@ -53,7 +53,10 @@
 #include "../Print.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <limits>
+#include <unordered_map>
 #include <boost/log/trivial.hpp>
 #include <tbb/parallel_for.h>
 
@@ -261,6 +264,143 @@ static void keep_lean_side(const LayerPtrs &layers, std::vector<Polygons> &regio
             region = intersection(region, keep);
 }
 
+// Points along `lines` at most `step` mm apart, in mm.
+static void sample_lines(const Polylines &lines, double step, std::vector<Vec2d> &out)
+{
+    for (const Polyline &line : lines)
+        for (size_t i = 0; i + 1 < line.points.size(); ++ i) {
+            const Vec2d  a = unscale(line.points[i]);
+            const Vec2d  b = unscale(line.points[i + 1]);
+            const int    n = std::max(1, int(std::ceil((b - a).norm() / step)));
+            for (int k = 0; k < n; ++ k)
+                out.emplace_back(a + (b - a) * (double(k) / n));
+            if (i + 2 == line.points.size())
+                out.emplace_back(b);
+        }
+}
+
+// Anchor points bucketed on a grid of kSpan-sized cells, so a sample only looks at its own and the
+// neighboring cells.
+class AnchorGrid
+{
+public:
+    explicit AnchorGrid(const std::vector<Vec2d> &points)
+    {
+        for (const Vec2d &p : points)
+            m_cells[key(cell(p.x()), cell(p.y()))].push_back(p);
+    }
+    // Is `p` within kCantilever of an anchor, or bridged between two anchors at least kBridgeDeg
+    // apart around it whose distances add up to at most kSpan?
+    bool holds(const Vec2d &p) const
+    {
+        std::array<double, kSectors> nearest;
+        nearest.fill(std::numeric_limits<double>::max());
+        const int cx = cell(p.x()), cy = cell(p.y());
+        for (int dx = -1; dx <= 1; ++ dx)
+            for (int dy = -1; dy <= 1; ++ dy) {
+                auto it = m_cells.find(key(cx + dx, cy + dy));
+                if (it == m_cells.end())
+                    continue;
+                for (const Vec2d &a : it->second) {
+                    const Vec2d  d    = a - p;
+                    const double dist = d.norm();
+                    if (dist <= kCantilever)
+                        return true;
+                    if (dist > kSpan)
+                        continue;
+                    const int sector = std::clamp(int(std::floor((std::atan2(d.y(), d.x()) + M_PI) / (2. * M_PI) * kSectors)), 0, kSectors - 1);
+                    nearest[sector]  = std::min(nearest[sector], dist);
+                }
+            }
+        const int apart = int(std::ceil(kBridgeDeg / 360. * kSectors));
+        for (int a = 0; a < kSectors; ++ a)
+            for (int b = a + apart; b <= a + kSectors - apart && b < kSectors; ++ b)
+                if (nearest[a] + nearest[b] <= kSpan)
+                    return true;
+        return false;
+    }
+
+private:
+    static int     cell(double v) { return int(std::floor(v / (kSpan + 1.))); }
+    static int64_t key(int x, int y) { return (int64_t(x) << 32) ^ int64_t(uint32_t(y)); }
+    std::unordered_map<int64_t, std::vector<Vec2d>> m_cells;
+};
+
+// The judge, after Support Fins' judge.js: samples each layer's overhang about kJudgeSample apart and
+// returns, projected onto the bed, the overhang no fin holds. A sample is held by the bed (under kPlateZ),
+// or by anchors up to kAnchorDrop below it: the tops of the fin walls (minus the top Z gap) and the edge
+// of the part the overhang grows out of.
+static Polygons judge_fins(const PrintObject &object, const std::vector<Polygons> &outlines,
+    const std::vector<Polygons> &overhangs, const std::vector<Polygons> &walls, double top_gap, float min_width)
+{
+    const auto       layers     = object.layers();
+    const size_t     num_layers = layers.size();
+    const float      touch      = float(scale_(0.1));
+    // Anchors per layer, in mm.
+    std::vector<std::vector<Vec2d>> wall_anchors(num_layers), part_anchors(num_layers);
+    tbb::parallel_for(tbb::blocked_range<size_t>(0, num_layers), [&](const tbb::blocked_range<size_t> &range) {
+        for (size_t k = range.begin(); k < range.end(); ++ k) {
+            if (! walls[k].empty())
+                sample_lines(to_polylines(walls[k]), 0.5 * kJudgeSample, wall_anchors[k]);
+            // The edge of slice k that the overhang above grows out of, where slice k is not itself
+            // overhanging: a slope does not hold itself up.
+            if (k + 1 < num_layers && ! overhangs[k + 1].empty()) {
+                const Polygons root = diff(offset(overhangs[k + 1], touch), offset(overhangs[k], touch));
+                if (! root.empty())
+                    sample_lines(intersection_pl(to_polylines(outlines[k]), root), 0.5 * kJudgeSample, part_anchors[k]);
+            }
+        }
+    });
+
+    std::vector<Polygons> uncovered(num_layers);
+    std::vector<double>   total(num_layers, 0.), held_area(num_layers, 0.);
+    tbb::parallel_for(tbb::blocked_range<size_t>(1, num_layers), [&](const tbb::blocked_range<size_t> &range) {
+        for (size_t i = range.begin(); i < range.end(); ++ i) {
+            if (overhangs[i].empty())
+                continue;
+            const double bottom = layers[i]->bottom_z();
+            if (bottom < kPlateZ)
+                continue;
+            std::vector<Vec2d> anchors;
+            for (size_t k = i; k -- > 0 && layers[k]->print_z > bottom - kAnchorDrop - top_gap - EPSILON;) {
+                if (layers[k]->print_z <= bottom + 0.05)
+                    append(anchors, wall_anchors[k]);
+                if (layers[k]->print_z > bottom - kAnchorDrop - EPSILON)
+                    append(anchors, part_anchors[k]);
+            }
+            const AnchorGrid grid(anchors);
+            const ExPolygons pieces = union_ex(overhangs[i]);
+            std::vector<Vec2d> samples;
+            sample_lines(to_polylines(to_polygons(pieces)), kJudgeSample, samples);
+            for (const ExPolygon &piece : pieces) {
+                const BoundingBox b = get_extents(piece);
+                const coord_t     s = scaled<coord_t>(kJudgeSample);
+                for (coord_t x = b.min.x() + s / 2; x < b.max.x(); x += s)
+                    for (coord_t y = b.min.y() + s / 2; y < b.max.y(); y += s)
+                        if (piece.contains(Point(x, y)))
+                            samples.emplace_back(unscale(Point(x, y)));
+            }
+            Polygons held;
+            const double half = 0.6 * kJudgeSample;
+            for (const Vec2d &p : samples)
+                if (grid.holds(p))
+                    held.emplace_back(BoundingBox(Point::new_scale(p.x() - half, p.y() - half), Point::new_scale(p.x() + half, p.y() + half)).polygon());
+            uncovered[i] = diff(overhangs[i], held);
+            total[i]     = area(overhangs[i]);
+            held_area[i] = total[i] - area(uncovered[i]);
+        }
+    });
+    Polygons out;
+    double   sum_total = 0., sum_held = 0.;
+    for (size_t i = 0; i < num_layers; ++ i) {
+        append(out, std::move(uncovered[i]));
+        sum_total += total[i];
+        sum_held  += held_area[i];
+    }
+    BOOST_LOG_TRIVIAL(info) << "Fin support - judge: " << (sum_total > 0. ? 100. * sum_held / sum_total : 100.) << "% of the overhang above the bed is held";
+    return opening(union_(out), min_width);
+}
+
 bool generate_fin_support(PrintObject& object, Polygons* reserved_columns)
 {
     const PrintObjectConfig &config         = object.config();
@@ -333,35 +473,6 @@ bool generate_fin_support(PrintObject& object, Polygons* reserved_columns)
     if (config.support_fin_lean_side_only.value)
         keep_lean_side(layers, regions);
 
-    // Give supplemental supports complete vertical columns wherever a real overhang
-    // cannot be reached by a fin. Reserving whole columns keeps both generators from
-    // cutting the other one's load-bearing path to the bed.
-    if (reserved_columns != nullptr) {
-        reserved_columns->clear();
-        Polygons    uncovered;
-        size_t      support_idx = 0;
-        const float bead        = float(support_params.support_material_flow.scaled_spacing());
-        for (size_t i = 1; i < num_layers; ++i) {
-            const double support_z = layers[i]->bottom_z() - top_gap;
-            while (support_idx + 1 < i && layers[support_idx + 1]->print_z <= support_z + EPSILON)
-                ++support_idx;
-            Polygons overhang = diff(outlines[i], offset(outlines[i - 1], 0.5f * bead));
-            if (layers[support_idx]->print_z <= support_z + EPSILON)
-                overhang = diff(overhang, offset(regions[support_idx], float(scale_(support_params.gap_xy)) + bead));
-            append(uncovered, overhang);
-        }
-        uncovered = offset(union_(uncovered), 0.5f * bead);
-        for (Polygons& region : regions)
-            region = diff(region, uncovered);
-    }
-
-    BoundingBox bbox;
-    for (const Polygons &region : regions)
-        if (! region.empty())
-            bbox.merge(get_extents(region));
-    if (! bbox.defined)
-        return false;
-
     const coord_t  spacing     = support_params.support_material_flow.scaled_spacing();
     // Fins are filled with concentric loops, two lines per loop. Round the thickness to whole loops:
     // a leftover narrower than a line is not filled and leaves a slot down the middle of the fin.
@@ -384,7 +495,10 @@ bool generate_fin_support(PrintObject& object, Polygons* reserved_columns)
     tbb::parallel_for(tbb::blocked_range<size_t>(1, num_layers), [&](const tbb::blocked_range<size_t> &range) {
         for (size_t i = range.begin(); i < range.end(); ++ i) {
             const double h = layers[i]->height;
-            const Polygons overhang = opening(diff(outlines[i], offset(outlines[i - 1], float(scale_(h / std::tan(kOverhangDeg * M_PI / 180.))))), min_width);
+            // A face kOverhangDeg from flat steps out h * cot(kOverhangDeg) per layer; keep the whole step
+            // where it is at least that wide.
+            const Polygons step     = diff(outlines[i], outlines[i - 1]);
+            const Polygons overhang = opening(step, float(scale_(0.5 * h / std::tan(kOverhangDeg * M_PI / 180.))));
             if (overhang.empty())
                 continue;
             // Voids narrower than a hole close up.
@@ -415,6 +529,26 @@ bool generate_fin_support(PrintObject& object, Polygons* reserved_columns)
     overhang_all = union_(overhang_all);
     level_all    = union_(level_all);
     const Polygons reach = offset(overhang_all, float(scale_(kCantilever)));
+    // Small holes bridge; keep the fallback out of them, whether or not there are fins.
+    auto reserve_holes = [&]() {
+        Polygons holes;
+        for (const Polygons &roof : hole_roofs)
+            append(holes, roof);
+        if (! holes.empty())
+            append(*reserved_columns, offset(union_(holes), float(spacing)));
+    };
+
+    BoundingBox bbox;
+    for (const Polygons &region : regions)
+        if (! region.empty())
+            bbox.merge(get_extents(region));
+    if (! bbox.defined) {
+        if (reserved_columns != nullptr) {
+            reserved_columns->clear();
+            reserve_holes();
+        }
+        return false;
+    }
 
     // 3. Fins, laid per island of the lowest fin region (regions only narrow going up).
     const size_t first_region = size_t(std::find_if(regions.begin(), regions.end(), [](const Polygons &r) { return ! r.empty(); }) - regions.begin());
@@ -555,6 +689,8 @@ bool generate_fin_support(PrintObject& object, Polygons* reserved_columns)
             const Layer &layer = *layers[i];
             const bool   foot  = layer.bottom_z() < kBaseHeight - EPSILON;
             Polygons     out   = opening(intersection(regions[i], foot ? feet : walls), min_width);
+            // A speck smaller than one loop square, e.g. a fin tip clipped where the object meets the bed, holds nothing.
+            out.erase(std::remove_if(out.begin(), out.end(), [&](const Polygon &p) { return std::abs(p.area()) < double(2 * spacing) * double(2 * spacing); }), out.end());
 
             // 4. Within kTipHeight under the object, the fin narrows to one loop.
             if (taper && ! foot && ! out.empty()) {
@@ -612,13 +748,27 @@ bool generate_fin_support(PrintObject& object, Polygons* reserved_columns)
             shaped[i] = std::move(out);
         }
     });
+    // 7. Judge, when a fallback can take what the fins do not hold.
     if (reserved_columns != nullptr) {
-        for (size_t i = 0; i < num_layers; ++i)
+        const Polygons uncovered = judge_fins(object, outlines, overhangs, shaped, top_gap, min_width);
+        // The fins give way to the fallback there.
+        const Polygons give_way  = offset(uncovered, 0.5f * float(spacing));
+        // Give supplemental supports complete vertical columns wherever a real overhang is not held.
+        // Reserving whole columns keeps both generators from cutting the other one's load-bearing path to the bed.
+        reserved_columns->clear();
+        for (size_t i = 0; i < num_layers; ++i) {
+            if (! give_way.empty()) {
+                shaped[i]        = diff(shaped[i], give_way);
+                interfaces[i]    = diff(interfaces[i], give_way);
+                tine_contacts[i] = diff(tine_contacts[i], give_way);
+            }
             if (!shaped[i].empty() || !interfaces[i].empty()) {
                 append(*reserved_columns, regions[i]);
                 append(*reserved_columns, shaped[i]);
             }
-        *reserved_columns = offset(union_(*reserved_columns), 0.5f * float(spacing));
+        }
+        *reserved_columns = diff(offset(union_(*reserved_columns), 0.5f * float(spacing)), give_way);
+        reserve_holes();
     }
     regions.clear();
 
