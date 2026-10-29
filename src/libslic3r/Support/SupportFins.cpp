@@ -14,25 +14,36 @@
 // https://github.com/gittrahan/support-fins, MIT), which adds these fins to STL files;
 // the default fin thickness and tine depth come from its geometry spec.
 //
-// Fins hold the object up rather than an overhang surface, so they do not use overhang
-// detection. For every object layer up to support_fin_height:
-//  1. The fin region is the area under the object (the projection of all layers above) that
-//     is clear of the object down to the bed, kept support_object_xy_distance off the object
-//     and support_top_z_distance below it. Support blockers are subtracted.
-//  2. The region is clipped to parallel strips (the fins), support_fin_thickness wide and one
-//     every support_fin_spacing. The strips are fixed in XY for the whole object, so each fin
-//     is one continuous wall. They run across the long axis of the fin regions, so they end
-//     at the edge the object leans over. A column between two strips gets its own fin.
+// Where the fins go follows Support Fins' placement rules and thresholds (MIT, Copyright (c) 2026
+// gittrahan): walls under the overhangs, kept clear of the part, a row on each free edge, rim walls
+// cut into short pieces, small holes left alone, and a judge that asks whether each bit of overhang is
+// near a wall or bridged between two. The geometry here is built per layer from the slices instead of
+// from 3D wall meshes, so fins go through the normal support toolpaths.
+//
+// For every object layer up to support_fin_height:
+//  1. The fin envelope is the area under the object (the projection of all layers above) that is
+//     clear of the object down to the bed, kept support_object_xy_distance off the object and
+//     support_top_z_distance below it. Support blockers are subtracted.
+//  2. Overhangs are what each slice adds over the one below, for faces up to kOverhangDeg from flat.
+//     The roof of a hole narrower than kHoleDiameter with part under it is left alone.
+//  3. Fins are laid per island of the envelope, fixed in XY for the whole object:
+//     - cross rows run across the island's long axis, support_fin_spacing apart, where the island is
+//       under an overhang. A piece shorter than kMinSpan at its base holds nothing and is dropped.
+//     - rails run along the island's free edges (not against the object), kEdgeInset in from the edge,
+//       on long islands (one per side: the anti-twist pair) and under level overhangs (rim walls).
+//       They are cut into pieces at most kRimPiece long so they break away.
 //     With support_fin_lean_side_only, only the fin columns on the side the object leans toward
 //     are kept (see keep_lean_side()).
 //     With support_fin_cross_spacing, fins also run across the main fins, bracing them into a scaffold.
-//  3. Within the first kBaseHeight above the bed the strips are widened into a foot.
-//  4. On tine layers, each fin that ends at the object is extended across the XY gap and
+//  4. Within the first kBaseHeight above the bed the fins are widened into a foot; within kTipHeight
+//     under the object they narrow to one loop, so the top breaks off cleanly.
+//  5. On tine layers, each fin that ends at the object is extended across the XY gap and
 //     support_fin_tine_depth into the object slice. Tine rows are support_fin_tine_spacing apart; with
 //     support_fin_tine_base_rows, extra rows are packed just above the foot, where the object is least
-//     stable (Slant3D). Spacing by distance keeps the number of tines proportional to the fin height.
-//  5. With support_fin_interface_layers, the fin region right under the object is printed as
+//     stable (Slant3D). Rails get a tine every kTinePitch along them.
+//  6. With support_fin_interface_layers, the fin region right under the object is printed as
 //     interface layers across the fin tops.
+//  7. The judge marks the overhang no fin holds; with a fallback, those columns go to tree or normal support.
 // The result is printed through the common support toolpath generator.
 
 #include "SupportFins.hpp"
@@ -42,7 +53,10 @@
 #include "../Print.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <limits>
+#include <unordered_map>
 #include <boost/log/trivial.hpp>
 #include <tbb/parallel_for.h>
 
@@ -58,6 +72,42 @@ static constexpr double kSlenderRatio   = 10.0;
 // kTineGapGrowth until they reach the regular tine spacing.
 static constexpr double kTineGapMin    = 0.8;
 static constexpr double kTineGapGrowth = 1.6;
+
+// Placement and judge thresholds, from Support Fins (web/prop/config.js, judge.js, rim.js, fins/coverage.js).
+// Faces flatter than this from horizontal are overhangs. Above Support Fins' 45 degrees so that a face
+// at exactly 45 degrees, which slices into steps one layer wide, still counts.
+static constexpr double kOverhangDeg  = 50.;
+// Overhangs at least this flat make a level region, which gets rim walls (RIM.levelDeg).
+static constexpr double kLevelDeg     = 10.;
+// A hole narrower than this with part under it within kHoleFloor is left to bridge (HOLE_D).
+static constexpr double kHoleDiameter = 6.;
+static constexpr double kHoleFloor    = 8.;
+// A cross row shorter than this at its base holds nothing (PROP.minSpanShort).
+static constexpr double kMinSpan      = 4.;
+// Rails stand this far in from a free edge (PROP.edgeInset) and are cut into pieces at most
+// kRimPiece long with kRimGap between them (RIM.pieceLen, RIM.pieceGap).
+static constexpr double kEdgeInset    = 0.6;
+static constexpr double kRimPiece     = 40.;
+static constexpr double kRimGap       = 1.5;
+// Cross rows keep this far clear of a rail (PROP.sideClear).
+static constexpr double kSideClear    = 0.35;
+// An island this many times longer than wide, and at least kLongMin long, gets a rail on each side.
+static constexpr double kLongAspect   = 3.;
+static constexpr double kLongMin      = 20.;
+// Fins narrow to one loop within this distance under the object (PROP.tipH).
+static constexpr double kTipHeight    = 1.5;
+// Tines along a rail, this far apart.
+static constexpr double kTinePitch    = 3.;
+// Judge: an overhang is held within kCantilever of a wall or of the part going down from it, or
+// bridged between anchors at least kBridgeDeg apart whose distances add up to at most kSpan. Anchors
+// are up to kAnchorDrop below it. Anything under kPlateZ is held by the bed (JUDGE, LOW_Z).
+static constexpr double kCantilever   = 2.;
+static constexpr double kSpan         = 12.;
+static constexpr double kBridgeDeg    = 135.;
+static constexpr int    kSectors      = 16;
+static constexpr double kAnchorDrop   = 1.5;
+static constexpr double kPlateZ       = 0.82;
+static constexpr double kJudgeSample  = 1.;
 
 std::vector<bool> fin_tine_layers(const PrintObject &object)
 {
@@ -214,6 +264,143 @@ static void keep_lean_side(const LayerPtrs &layers, std::vector<Polygons> &regio
             region = intersection(region, keep);
 }
 
+// Points along `lines` at most `step` mm apart, in mm.
+static void sample_lines(const Polylines &lines, double step, std::vector<Vec2d> &out)
+{
+    for (const Polyline &line : lines)
+        for (size_t i = 0; i + 1 < line.points.size(); ++ i) {
+            const Vec2d  a = unscale(line.points[i]);
+            const Vec2d  b = unscale(line.points[i + 1]);
+            const int    n = std::max(1, int(std::ceil((b - a).norm() / step)));
+            for (int k = 0; k < n; ++ k)
+                out.emplace_back(a + (b - a) * (double(k) / n));
+            if (i + 2 == line.points.size())
+                out.emplace_back(b);
+        }
+}
+
+// Anchor points bucketed on a grid of kSpan-sized cells, so a sample only looks at its own and the
+// neighboring cells.
+class AnchorGrid
+{
+public:
+    explicit AnchorGrid(const std::vector<Vec2d> &points)
+    {
+        for (const Vec2d &p : points)
+            m_cells[key(cell(p.x()), cell(p.y()))].push_back(p);
+    }
+    // Is `p` within kCantilever of an anchor, or bridged between two anchors at least kBridgeDeg
+    // apart around it whose distances add up to at most kSpan?
+    bool holds(const Vec2d &p) const
+    {
+        std::array<double, kSectors> nearest;
+        nearest.fill(std::numeric_limits<double>::max());
+        const int cx = cell(p.x()), cy = cell(p.y());
+        for (int dx = -1; dx <= 1; ++ dx)
+            for (int dy = -1; dy <= 1; ++ dy) {
+                auto it = m_cells.find(key(cx + dx, cy + dy));
+                if (it == m_cells.end())
+                    continue;
+                for (const Vec2d &a : it->second) {
+                    const Vec2d  d    = a - p;
+                    const double dist = d.norm();
+                    if (dist <= kCantilever)
+                        return true;
+                    if (dist > kSpan)
+                        continue;
+                    const int sector = std::clamp(int(std::floor((std::atan2(d.y(), d.x()) + M_PI) / (2. * M_PI) * kSectors)), 0, kSectors - 1);
+                    nearest[sector]  = std::min(nearest[sector], dist);
+                }
+            }
+        const int apart = int(std::ceil(kBridgeDeg / 360. * kSectors));
+        for (int a = 0; a < kSectors; ++ a)
+            for (int b = a + apart; b <= a + kSectors - apart && b < kSectors; ++ b)
+                if (nearest[a] + nearest[b] <= kSpan)
+                    return true;
+        return false;
+    }
+
+private:
+    static int     cell(double v) { return int(std::floor(v / (kSpan + 1.))); }
+    static int64_t key(int x, int y) { return (int64_t(x) << 32) ^ int64_t(uint32_t(y)); }
+    std::unordered_map<int64_t, std::vector<Vec2d>> m_cells;
+};
+
+// The judge, after Support Fins' judge.js: samples each layer's overhang about kJudgeSample apart and
+// returns, projected onto the bed, the overhang no fin holds. A sample is held by the bed (under kPlateZ),
+// or by anchors up to kAnchorDrop below it: the tops of the fin walls (minus the top Z gap) and the edge
+// of the part the overhang grows out of.
+static Polygons judge_fins(const PrintObject &object, const std::vector<Polygons> &outlines,
+    const std::vector<Polygons> &overhangs, const std::vector<Polygons> &walls, double top_gap, float min_width)
+{
+    const auto       layers     = object.layers();
+    const size_t     num_layers = layers.size();
+    const float      touch      = float(scale_(0.1));
+    // Anchors per layer, in mm.
+    std::vector<std::vector<Vec2d>> wall_anchors(num_layers), part_anchors(num_layers);
+    tbb::parallel_for(tbb::blocked_range<size_t>(0, num_layers), [&](const tbb::blocked_range<size_t> &range) {
+        for (size_t k = range.begin(); k < range.end(); ++ k) {
+            if (! walls[k].empty())
+                sample_lines(to_polylines(walls[k]), 0.5 * kJudgeSample, wall_anchors[k]);
+            // The edge of slice k that the overhang above grows out of, where slice k is not itself
+            // overhanging: a slope does not hold itself up.
+            if (k + 1 < num_layers && ! overhangs[k + 1].empty()) {
+                const Polygons root = diff(offset(overhangs[k + 1], touch), offset(overhangs[k], touch));
+                if (! root.empty())
+                    sample_lines(intersection_pl(to_polylines(outlines[k]), root), 0.5 * kJudgeSample, part_anchors[k]);
+            }
+        }
+    });
+
+    std::vector<Polygons> uncovered(num_layers);
+    std::vector<double>   total(num_layers, 0.), held_area(num_layers, 0.);
+    tbb::parallel_for(tbb::blocked_range<size_t>(1, num_layers), [&](const tbb::blocked_range<size_t> &range) {
+        for (size_t i = range.begin(); i < range.end(); ++ i) {
+            if (overhangs[i].empty())
+                continue;
+            const double bottom = layers[i]->bottom_z();
+            if (bottom < kPlateZ)
+                continue;
+            std::vector<Vec2d> anchors;
+            for (size_t k = i; k -- > 0 && layers[k]->print_z > bottom - kAnchorDrop - top_gap - EPSILON;) {
+                if (layers[k]->print_z <= bottom + 0.05)
+                    append(anchors, wall_anchors[k]);
+                if (layers[k]->print_z > bottom - kAnchorDrop - EPSILON)
+                    append(anchors, part_anchors[k]);
+            }
+            const AnchorGrid grid(anchors);
+            const ExPolygons pieces = union_ex(overhangs[i]);
+            std::vector<Vec2d> samples;
+            sample_lines(to_polylines(to_polygons(pieces)), kJudgeSample, samples);
+            for (const ExPolygon &piece : pieces) {
+                const BoundingBox b = get_extents(piece);
+                const coord_t     s = scaled<coord_t>(kJudgeSample);
+                for (coord_t x = b.min.x() + s / 2; x < b.max.x(); x += s)
+                    for (coord_t y = b.min.y() + s / 2; y < b.max.y(); y += s)
+                        if (piece.contains(Point(x, y)))
+                            samples.emplace_back(unscale(Point(x, y)));
+            }
+            Polygons held;
+            const double half = 0.6 * kJudgeSample;
+            for (const Vec2d &p : samples)
+                if (grid.holds(p))
+                    held.emplace_back(BoundingBox(Point::new_scale(p.x() - half, p.y() - half), Point::new_scale(p.x() + half, p.y() + half)).polygon());
+            uncovered[i] = diff(overhangs[i], held);
+            total[i]     = area(overhangs[i]);
+            held_area[i] = total[i] - area(uncovered[i]);
+        }
+    });
+    Polygons out;
+    double   sum_total = 0., sum_held = 0.;
+    for (size_t i = 0; i < num_layers; ++ i) {
+        append(out, std::move(uncovered[i]));
+        sum_total += total[i];
+        sum_held  += held_area[i];
+    }
+    BOOST_LOG_TRIVIAL(info) << "Fin support - judge: " << (sum_total > 0. ? 100. * sum_held / sum_total : 100.) << "% of the overhang above the bed is held";
+    return opening(union_(out), min_width);
+}
+
 bool generate_fin_support(PrintObject& object, Polygons* reserved_columns)
 {
     const PrintObjectConfig &config         = object.config();
@@ -286,36 +473,6 @@ bool generate_fin_support(PrintObject& object, Polygons* reserved_columns)
     if (config.support_fin_lean_side_only.value)
         keep_lean_side(layers, regions);
 
-    // Give supplemental supports complete vertical columns wherever a real overhang
-    // cannot be reached by a fin. Reserving whole columns keeps both generators from
-    // cutting the other one's load-bearing path to the bed.
-    if (reserved_columns != nullptr) {
-        reserved_columns->clear();
-        Polygons    uncovered;
-        size_t      support_idx = 0;
-        const float bead        = float(support_params.support_material_flow.scaled_spacing());
-        for (size_t i = 1; i < num_layers; ++i) {
-            const double support_z = layers[i]->bottom_z() - top_gap;
-            while (support_idx + 1 < i && layers[support_idx + 1]->print_z <= support_z + EPSILON)
-                ++support_idx;
-            Polygons overhang = diff(outlines[i], offset(outlines[i - 1], 0.5f * bead));
-            if (layers[support_idx]->print_z <= support_z + EPSILON)
-                overhang = diff(overhang, offset(regions[support_idx], float(scale_(support_params.gap_xy)) + bead));
-            append(uncovered, overhang);
-        }
-        uncovered = offset(union_(uncovered), 0.5f * bead);
-        for (Polygons& region : regions)
-            region = diff(region, uncovered);
-    }
-
-    BoundingBox bbox;
-    for (const Polygons &region : regions)
-        if (! region.empty())
-            bbox.merge(get_extents(region));
-    if (! bbox.defined)
-        return false;
-
-    // 2.-3. Clip the regions to fins.
     const coord_t  spacing     = support_params.support_material_flow.scaled_spacing();
     // Fins are filled with concentric loops, two lines per loop. Round the thickness to whole loops:
     // a leftover narrower than a line is not filled and leaves a slot down the middle of the fin.
@@ -323,55 +480,203 @@ bool generate_fin_support(PrintObject& object, Polygons* reserved_columns)
     const coord_t  pitch       = scaled<coord_t>(config.support_fin_spacing.value) + thickness;
     // A tine is one bead out and one bead back: two extrusions wide, never wider than the fin.
     const coord_t  tine_width  = std::min(thickness, 2 * spacing);
-    const double   angle       = fin_angle(regions);
-    Polygons       fins        = fin_strips(bbox, angle, pitch, thickness);
-    Polygons       feet        = fin_strips(bbox, angle, pitch, coord_t(kBaseWidthRatio * thickness));
-    Polygons       tine_strips = fin_strips(bbox, angle, pitch, tine_width);
-    const BoundingBox rbox     = rotated_extents(bbox, angle, thickness);
+    const coord_t  foot_width  = coord_t(kBaseWidthRatio * thickness);
     // Pieces narrower than half an extrusion cannot be printed; drop them.
     const float    min_width   = 0.25f * float(spacing);
-    // Scaffold: cross fins at right angles to the main fins. Tines stay on the main fins only.
-    const double      cross_angle = angle + 0.5 * M_PI;
-    const coord_t     cross_pitch = config.support_fin_cross_spacing.value > 0. ? scaled<coord_t>(config.support_fin_cross_spacing.value) + thickness : 0;
-    const BoundingBox cross_rbox  = rotated_extents(bbox, cross_angle, thickness);
-    const Polygons    main_fins   = fins;
-    if (cross_pitch > 0) {
-        append(fins, fin_strips(bbox, cross_angle, cross_pitch, thickness));
-        append(feet, fin_strips(bbox, cross_angle, cross_pitch, coord_t(kBaseWidthRatio * thickness)));
-    }
-    // Regions only narrow going up, so the lowest layer holds every fin column. A column narrower
-    // than the fin spacing may fall between two grid fins: give it its own fin through its center,
-    // fixed for all layers so the fin stands on itself all the way down to the bed.
-    for (const Polygons &region : regions)
-        if (! region.empty()) {
-            for (const ExPolygon &island : union_ex(region))
-                if (intersection(to_polygons(island), main_fins).empty()) {
-                    Point c = island.contour.centroid();
-                    c.rotate(-angle);
-                    fins.emplace_back(fin_strip(rbox, angle, c.y(), thickness));
-                    feet.emplace_back(fin_strip(rbox, angle, c.y(), coord_t(kBaseWidthRatio * thickness)));
-                    tine_strips.emplace_back(fin_strip(rbox, angle, c.y(), tine_width));
-                    if (cross_pitch > 0) {
-                        // Brace it with a cross fin through the same center.
-                        Point cc = island.contour.centroid();
-                        cc.rotate(-cross_angle);
-                        fins.emplace_back(fin_strip(cross_rbox, cross_angle, cc.y(), thickness));
-                        feet.emplace_back(fin_strip(cross_rbox, cross_angle, cc.y(), coord_t(kBaseWidthRatio * thickness)));
-                    }
-                }
-            break;
-        }
-    fins        = union_(fins);
-    feet        = union_(feet);
-    tine_strips = union_(tine_strips);
-    const std::vector<bool> tine_row = fin_tine_layers(object);
     const float    depth       = float(scale_(config.support_fin_tine_depth.value));
+    const float    tine_reach  = float(scale_(support_params.gap_xy)) + depth + float(spacing);
+    const coord_t  cross_pitch = config.support_fin_cross_spacing.value > 0. ? scaled<coord_t>(config.support_fin_cross_spacing.value) + thickness : 0;
+    // A piece of wall this short (area / thickness) holds nothing.
+    const double   min_piece   = kMinSpan * scale_(1.) * double(thickness);
+
+    // 2. Overhangs: what each slice adds over the one below, for faces up to kOverhangDeg from flat.
+    // The roof of a small hole, spanning a void narrower than kHoleDiameter with part under it, bridges.
+    std::vector<Polygons> overhangs(num_layers), level_overhangs(num_layers), hole_roofs(num_layers);
+    tbb::parallel_for(tbb::blocked_range<size_t>(1, num_layers), [&](const tbb::blocked_range<size_t> &range) {
+        for (size_t i = range.begin(); i < range.end(); ++ i) {
+            const double h = layers[i]->height;
+            // A face kOverhangDeg from flat steps out h * cot(kOverhangDeg) per layer; keep the whole step
+            // where it is at least that wide.
+            const Polygons step     = diff(outlines[i], outlines[i - 1]);
+            const Polygons overhang = opening(step, float(scale_(0.5 * h / std::tan(kOverhangDeg * M_PI / 180.))));
+            if (overhang.empty())
+                continue;
+            // Voids narrower than a hole close up.
+            const Polygons narrow_voids = closing(outlines[i - 1], float(scale_(0.5 * kHoleDiameter)));
+            const double   floor_z      = layers[i]->bottom_z() - kHoleFloor;
+            for (const ExPolygon &piece : union_ex(overhang)) {
+                const Polygons p = to_polygons(piece);
+                bool hole = area(intersection(p, narrow_voids)) > 0.9 * piece.area();
+                if (hole) {
+                    hole = false;
+                    for (size_t k = i - 1; k -- > 0 && layers[k]->print_z > floor_z - EPSILON;)
+                        if (! intersection(p, outlines[k]).empty()) {
+                            hole = true;
+                            break;
+                        }
+                }
+                append(hole ? hole_roofs[i] : overhangs[i], p);
+            }
+            // A slice that grows by more than h * cot(kLevelDeg) at once is a level overhang.
+            level_overhangs[i] = opening(overhangs[i], float(scale_(0.5 * h / std::tan(kLevelDeg * M_PI / 180.))));
+        }
+    });
+    Polygons overhang_all, level_all;
+    for (size_t i = 1; i < num_layers; ++ i) {
+        append(overhang_all, overhangs[i]);
+        append(level_all, level_overhangs[i]);
+    }
+    overhang_all = union_(overhang_all);
+    level_all    = union_(level_all);
+    const Polygons reach = offset(overhang_all, float(scale_(kCantilever)));
+    // Small holes bridge; keep the fallback out of them, whether or not there are fins.
+    auto reserve_holes = [&]() {
+        Polygons holes;
+        for (const Polygons &roof : hole_roofs)
+            append(holes, roof);
+        if (! holes.empty())
+            append(*reserved_columns, offset(union_(holes), float(spacing)));
+    };
+
+    BoundingBox bbox;
+    for (const Polygons &region : regions)
+        if (! region.empty())
+            bbox.merge(get_extents(region));
+    if (! bbox.defined) {
+        if (reserved_columns != nullptr) {
+            reserved_columns->clear();
+            reserve_holes();
+        }
+        return false;
+    }
+
+    // 3. Fins, laid per island of the lowest fin region (regions only narrow going up).
+    const size_t first_region = size_t(std::find_if(regions.begin(), regions.end(), [](const Polygons &r) { return ! r.empty(); }) - regions.begin());
+    const ExPolygons islands  = union_ex(regions[first_region]);
+    // The part the island stands beside on the bed: its edge against that part is not free.
+    Polygons bed_part;
+    for (size_t i = 0; i <= first_region; ++ i)
+        append(bed_part, outlines[i]);
+    const float    inset     = float(scale_(kEdgeInset));
+    const Polygons not_free  = offset(union_(bed_part), float(scale_(support_params.gap_xy_first_layer + 0.2)) + inset + float(thickness));
+    // Rim walls are cut into pieces at most kRimPiece long.
+    Polygons rim_cuts = fin_strips(bbox, 0., scaled<coord_t>(kRimPiece + kRimGap), scaled<coord_t>(kRimGap));
+    append(rim_cuts, fin_strips(bbox, 0.5 * M_PI, scaled<coord_t>(kRimPiece + kRimGap), scaled<coord_t>(kRimGap)));
+
+    // Walls and their feet, the one-loop band they narrow to at the top, and tine strips in two
+    // directions (kept apart so crossing strips do not merge into one long piece).
+    Polygons walls, feet, thin, tines_along, tines_across;
+    double   interface_dir = 0., largest = 0.;
+    for (const ExPolygon &island : islands) {
+        const Polygons island_p = to_polygons(island);
+        const double   angle    = fin_angle({ island_p });
+        if (island.area() > largest) {
+            largest       = island.area();
+            interface_dir = angle;
+        }
+        Polygon frame = island.contour;
+        frame.rotate(-angle);
+        const BoundingBox rb = frame.bounding_box();
+        BoundingBox rbox = rb;
+        rbox.offset(foot_width);
+        const double length = unscale<double>(rb.size().y());
+        const double width  = unscale<double>(rb.size().x());
+
+        // Rails: one along each free edge of a long island (the anti-twist pair, ends dropped),
+        // and rim walls along the whole free edge under a level overhang.
+        Polygons rails;
+        const Polygons under   = intersection(island_p, overhang_all);
+        const double   under_a = area(under);
+        const bool     level   = under_a > 0. && area(intersection(under, level_all)) >= 0.5 * under_a;
+        const bool     longish = length >= kLongAspect * width && length >= kLongMin;
+        if (level || longish) {
+            Polygons ring = diff(offset(island, - inset), offset(island, - inset - float(thickness)));
+            ring = diff(ring, not_free);
+            if (! level) {
+                const coord_t m = inset + thickness + scaled<coord_t>(0.5);
+                Polygon middle({ { rbox.min.x(), rb.min.y() + m }, { rbox.max.x(), rb.min.y() + m }, { rbox.max.x(), rb.max.y() - m }, { rbox.min.x(), rb.max.y() - m } });
+                middle.rotate(angle);
+                ring = intersection(ring, Polygons{ middle });
+            }
+            for (const ExPolygon &piece : union_ex(diff(ring, rim_cuts)))
+                if (piece.area() >= min_piece)
+                    append(rails, to_polygons(piece));
+        }
+        if (! rails.empty()) {
+            append(feet, intersection(offset(rails, float(thickness)), island_p));
+            if (thickness > 2 * spacing) {
+                const float mid = inset + 0.5f * float(thickness);
+                append(thin, intersection(rails, diff(offset(island, - mid + float(spacing)), offset(island, - mid - float(spacing)))));
+            }
+            const Polygons near_rails = offset(rails, tine_reach + float(thickness));
+            const BoundingBox ib = get_extents(island_p);
+            append(tines_along, intersection(fin_strips(ib, angle, scaled<coord_t>(kTinePitch), tine_width), near_rails));
+            append(tines_across, intersection(fin_strips(ib, angle + 0.5 * M_PI, scaled<coord_t>(kTinePitch), tine_width), near_rails));
+        }
+
+        // Cross rows across the long axis, centered on the island, where it is under an overhang.
+        // A row shorter than kMinSpan at its base is a dash that holds nothing, so it is dropped.
+        const Polygons allowed = intersection(island_p, reach);
+        const Polygons clear   = offset(rails, float(scale_(kSideClear)));
+        const int      rows    = std::max(1, int(std::lround(double(rb.size().y()) / double(pitch))));
+        bool           any     = ! rails.empty();
+        auto add_row = [&](coord_t y, const Polygons &row) {
+            append(walls, row);
+            append(feet, intersection(Polygons{ fin_strip(rbox, angle, y, foot_width) }, offset(row, float(thickness))));
+            append(thin, intersection(Polygons{ fin_strip(rbox, angle, y, tine_width) }, row));
+            tines_along.emplace_back(fin_strip(rbox, angle, y, tine_width));
+            any = true;
+        };
+        for (int k = 0; k < rows; ++ k) {
+            const coord_t y = rb.min.y() + coord_t((k + 0.5) * double(rb.size().y()) / rows);
+            Polygons row;
+            for (const ExPolygon &piece : intersection_ex(Polygons{ fin_strip(rbox, angle, y, thickness) }, allowed))
+                if (piece.area() >= min_piece)
+                    append(row, to_polygons(piece));
+            if (! row.empty())
+                row = opening(diff(row, clear), min_width);
+            if (! row.empty())
+                add_row(y, row);
+        }
+        // An island with nothing on it still gets one fin through its center, standing on itself to the bed.
+        if (! any) {
+            Point c = island.contour.centroid();
+            c.rotate(-angle);
+            const Polygons row = intersection(Polygons{ fin_strip(rbox, angle, c.y(), thickness) }, island_p);
+            if (! row.empty())
+                add_row(c.y(), row);
+        }
+        append(walls, rails);
+
+        // Scaffold: cross fins along the long axis, bracing the rows. Tines stay on the rows.
+        if (cross_pitch > 0) {
+            const double cross_angle = angle + 0.5 * M_PI;
+            Polygon cframe = island.contour;
+            cframe.rotate(-cross_angle);
+            const BoundingBox crb = cframe.bounding_box();
+            BoundingBox crbox = crb;
+            crbox.offset(foot_width);
+            const int crows = std::max(1, int(std::lround(double(crb.size().y()) / double(cross_pitch))));
+            for (int k = 0; k < crows; ++ k) {
+                const coord_t y = crb.min.y() + coord_t((k + 0.5) * double(crb.size().y()) / crows);
+                append(walls, intersection(Polygons{ fin_strip(crbox, cross_angle, y, thickness) }, island_p));
+                append(feet, intersection(Polygons{ fin_strip(crbox, cross_angle, y, foot_width) }, island_p));
+            }
+        }
+    }
+    walls        = union_(walls);
+    feet         = union_(walls, feet);
+    thin         = union_(thin);
+    tines_along  = union_(tines_along);
+    tines_across = union_(tines_across);
+    const bool taper = thickness > 2 * spacing && ! thin.empty();
+    const std::vector<bool> tine_row = fin_tine_layers(object);
 
     const int      interface_layers = config.support_fin_interface_layers.value;
     // Orient line-based interfaces across the fins so they can bridge from fin to fin.
     // Keep the normal interface filament, pattern, spacing and ironing settings.
     support_params.support_style          = smsGrid; // grid style prints interfaces at interface_angle
-    support_params.interface_angle        = float(angle + 0.5 * M_PI);
+    support_params.interface_angle        = float(interface_dir + 0.5 * M_PI);
     const coordf_t top_gap_below    = config.support_top_z_distance.value;
 
     std::vector<Polygons> shaped(num_layers);
@@ -383,35 +688,52 @@ bool generate_fin_support(PrintObject& object, Polygons* reserved_columns)
                 continue;
             const Layer &layer = *layers[i];
             const bool   foot  = layer.bottom_z() < kBaseHeight - EPSILON;
-            Polygons     out   = opening(intersection(regions[i], foot ? feet : fins), min_width);
+            Polygons     out   = opening(intersection(regions[i], foot ? feet : walls), min_width);
+            // A speck smaller than one loop square, e.g. a fin tip clipped where the object meets the bed, holds nothing.
+            out.erase(std::remove_if(out.begin(), out.end(), [&](const Polygon &p) { return std::abs(p.area()) < double(2 * spacing) * double(2 * spacing); }), out.end());
 
-            // 4. Tines. The first object layer, which sits on the bed, never gets them.
+            // 4. Within kTipHeight under the object, the fin narrows to one loop.
+            if (taper && ! foot && ! out.empty()) {
+                Polygons tip;
+                for (size_t j = i + 1; j < num_layers && layers[j]->bottom_z() < layer.print_z + top_gap + kTipHeight + EPSILON; ++ j)
+                    if (layers[j]->bottom_z() > layer.print_z + top_gap - EPSILON)
+                        append(tip, outlines[j]);
+                if (! tip.empty()) {
+                    tip = union_(tip);
+                    out = opening(union_(diff(out, tip), intersection(intersection(out, tip), thin)), min_width);
+                }
+            }
+
+            // 5. Tines. The first object layer, which sits on the bed, never gets them.
             if (! out.empty() && tine_row[i]) {
                 const float    gap           = float(scale_(support_params.gap_xy));
                 const Polygons object_slices = to_polygons(layer.lslices);
                 // Ring from `depth` inside the object surface out to just past the XY gap.
                 const Polygons ring      = diff(offset(object_slices, gap + float(spacing)), offset(object_slices, - depth));
-                Polygons       tines     = intersection(intersection(tine_strips, ring), offset(out, gap + depth + float(spacing)));
                 const Polygons fin_touch = offset(out, float(SCALED_EPSILON));
-                tines.erase(std::remove_if(tines.begin(), tines.end(), [&](const Polygon &tine) {
-                    // A tine must bridge from its fin into the object; one that misses either end
-                    // (e.g. a short piece cut off at a corner of the ring) prints in mid-air.
-                    if (intersection(Polygons{ tine }, fin_touch).empty() || intersection(Polygons{ tine }, object_slices).empty())
-                        return true;
-                    // A fin running along the object surface would leave a long strip inside the ring:
-                    // a welded seam, not a tine. Crossings down to about 20 degrees are kept.
-                    Polygon along = tine;
-                    along.rotate(-angle);
-                    const BoundingBox b = along.bounding_box();
-                    return double(b.max.x() - b.min.x()) > 3. * (gap + depth + float(spacing));
-                }), tines.end());
+                const Polygons near_fin  = offset(out, gap + depth + float(spacing));
+                Polygons       tines;
+                for (const Polygons *strips : { &tines_along, &tines_across }) {
+                    Polygons found = intersection(intersection(*strips, ring), near_fin);
+                    found.erase(std::remove_if(found.begin(), found.end(), [&](const Polygon &tine) {
+                        // A tine must bridge from its fin into the object; one that misses either end
+                        // (e.g. a short piece cut off at a corner of the ring) prints in mid-air.
+                        if (intersection(Polygons{ tine }, fin_touch).empty() || intersection(Polygons{ tine }, object_slices).empty())
+                            return true;
+                        // A strip running along the object surface would leave a long piece inside the ring:
+                        // a welded seam, not a tine.
+                        return std::abs(tine.area()) / double(tine_width) > 3. * (gap + depth + float(spacing));
+                    }), found.end());
+                    append(tines, std::move(found));
+                }
                 if (!tines.empty()) {
+                    tines = union_(tines);
                     out = union_(out, tines);
                     tine_contacts[i] = std::move(tines);
                 }
             }
 
-            // 5. Interface: the part of the fin region within interface_layers layers under the object
+            // 6. Interface: the part of the fin region within interface_layers layers under the object
             // (below the top Z gap) becomes an interface deck; the fins stop under it.
             if (interface_layers > 0) {
                 Polygons over;
@@ -426,18 +748,33 @@ bool generate_fin_support(PrintObject& object, Polygons* reserved_columns)
             shaped[i] = std::move(out);
         }
     });
+    // 7. Judge, when a fallback can take what the fins do not hold.
     if (reserved_columns != nullptr) {
-        for (size_t i = 0; i < num_layers; ++i)
+        const Polygons uncovered = judge_fins(object, outlines, overhangs, shaped, top_gap, min_width);
+        // The fins give way to the fallback there.
+        const Polygons give_way  = offset(uncovered, 0.5f * float(spacing));
+        // Give supplemental supports complete vertical columns wherever a real overhang is not held.
+        // Reserving whole columns keeps both generators from cutting the other one's load-bearing path to the bed.
+        reserved_columns->clear();
+        for (size_t i = 0; i < num_layers; ++i) {
+            if (! give_way.empty()) {
+                shaped[i]        = diff(shaped[i], give_way);
+                interfaces[i]    = diff(interfaces[i], give_way);
+                tine_contacts[i] = diff(tine_contacts[i], give_way);
+            }
             if (!shaped[i].empty() || !interfaces[i].empty()) {
                 append(*reserved_columns, regions[i]);
                 append(*reserved_columns, shaped[i]);
             }
-        *reserved_columns = offset(union_(*reserved_columns), 0.5f * float(spacing));
+        }
+        *reserved_columns = diff(offset(union_(*reserved_columns), 0.5f * float(spacing)), give_way);
+        reserve_holes();
     }
     regions.clear();
 
     // A fin much taller than it is long is a free-standing blade that can wobble or snap mid-print,
-    // e.g. under a small feature high above the bed. Measure each fin above the foot.
+    // e.g. under a small feature high above the bed. Measure each fin above the foot; its length is
+    // its area over its thickness, which holds for rows, rails and rim pieces alike.
     bool slender = false;
     {
         size_t first = 0;
@@ -445,15 +782,9 @@ bool generate_fin_support(PrintObject& object, Polygons* reserved_columns)
             ++ first;
         if (first < num_layers)
             for (const ExPolygon &fin : union_ex(shaped[first])) {
-                Polygon along = fin.contour;
-                along.rotate(-angle);
-                const BoundingBox b      = along.bounding_box();
-                // A braced fin is stiff in both directions, so its shorter side is the one that counts.
-                const coord_t     xlen   = b.max.x() - b.min.x();
-                const coord_t     ylen   = b.max.y() - b.min.y();
-                const coord_t     length = cross_pitch > 0 && ylen > 2 * thickness ? std::min(xlen, ylen) : xlen;
-                const Polygons    column = offset(fin, float(spacing));
-                size_t            top    = first;
+                const double   length = fin.area() / double(thickness);
+                const Polygons column = offset(fin, float(spacing));
+                size_t         top    = first;
                 while (top + 1 < num_layers && ! intersection(shaped[top + 1], column).empty())
                     ++ top;
                 if (layers[top]->print_z > kSlenderRatio * unscale<double>(length))
