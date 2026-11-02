@@ -288,6 +288,8 @@ TEST_CASE("SupportMaterial: fin support is built from walls no thicker than the 
         // Fins are whole two-line loops; with the 0.4 mm default line this is one loop, about 0.7 mm.
         { "support_fin_thickness",     0.7 },
         { "support_fin_tine_spacing", 0 },
+        // The top interface is a solid pad; this checks the fin walls alone.
+        { "support_interface_top_layers", 0 },
     });
     size_t checked = 0;
     for (const SupportLayer *layer : print.objects().front()->support_layers()) {
@@ -364,6 +366,8 @@ TEST_CASE("SupportMaterial: fin support holds a cube tipped onto an edge regardl
         { "support_fin_fallback", "none" },
         { "layer_height",            0.2 },
         { "support_threshold_angle", 30 },
+        // The top interface is a solid pad; this checks the fin walls alone.
+        { "support_interface_top_layers", 0 },
     });
     const PrintObject &object = *print.objects().front();
     REQUIRE(! object.support_layers().empty());

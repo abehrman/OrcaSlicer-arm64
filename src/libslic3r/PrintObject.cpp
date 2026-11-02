@@ -1385,7 +1385,7 @@ void PrintObject::detect_surfaces_type()
                 else if (m_config.support_type.value == stTreeAuto) {
                     bottom_is_fully_supported &= m_config.support_interface_top_layers.value > 0 &&
                                                   m_config.max_bridge_length.value == 0 &&
-                                                  m_config.support_critical_regions_only.value == false);
+                                                  m_config.support_critical_regions_only.value == false;
                 }
                 SurfaceType surface_type_bottom_other = bottom_is_fully_supported ? stBottom : stBottomBridge;
                 for (size_t idx_layer = range.begin(); idx_layer < range.end(); ++ idx_layer) {
