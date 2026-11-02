@@ -31,7 +31,7 @@
 //     support_fin_tine_depth into the object slice. Tine rows are support_fin_tine_spacing apart; with
 //     support_fin_tine_base_rows, extra rows are packed just above the foot, where the object is least
 //     stable (Slant3D). Spacing by distance keeps the number of tines proportional to the fin height.
-//  5. With support_fin_interface_layers, the fin region right under the object is printed as
+//  5. With support_interface_top_layers, the fin region right under the object is printed as
 //     interface layers across the fin tops.
 // The result is printed through the common support toolpath generator.
 
@@ -367,7 +367,7 @@ bool generate_fin_support(PrintObject& object, Polygons* reserved_columns)
     const std::vector<bool> tine_row = fin_tine_layers(object);
     const float    depth       = float(scale_(config.support_fin_tine_depth.value));
 
-    const int      interface_layers = config.support_fin_interface_layers.value;
+    const int      interface_layers = config.support_interface_top_layers.value;
     // Orient line-based interfaces across the fins so they can bridge from fin to fin.
     // Keep the normal interface filament, pattern, spacing and ironing settings.
     support_params.support_style          = smsGrid; // grid style prints interfaces at interface_angle

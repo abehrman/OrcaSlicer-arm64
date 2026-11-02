@@ -5838,17 +5838,6 @@ void PrintConfigDef::init_fff_params()
     def->mode          = comSimple;
     def->set_default_value(new ConfigOptionEnum<FinSupportFallback>(fsfTree));
 
-    def = this->add("support_fin_interface_layers", coInt);
-    def->label = L("Interface layers");
-    def->category = L("Support");
-    def->tooltip = L("Number of interface layers printed across the tops of the fins where the object rests on them, "
-                     "so an overhang sits on a flat deck instead of the fin edges. They use the support interface "
-                     "filament, pattern and spacing. Also sets the top interface layer count for supplemental supports. Set to 0 to disable.");
-    def->sidetext = L("layers");
-    def->min = 0;
-    def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionInt(0));
-
     def = this->add("independent_support_layer_height", coBool);
     def->label = L("Independent support layer height");
     def->category = L("Support");
@@ -7932,6 +7921,8 @@ void PrintConfigDef::handle_legacy(t_config_option_key &opt_key, std::string &va
         "bed_size",
         "print_center", "g0", "wipe_tower_per_color_wipe", 
         "support_sharp_tails","support_remove_small_overhangs", "support_with_sheath",
+        // Orca: fins use support_interface_top_layers.
+        "support_fin_interface_layers",
         "tree_support_collision_resolution", "tree_support_with_infill",
         "max_volumetric_speed", "max_print_speed",
         "support_closing_radius",

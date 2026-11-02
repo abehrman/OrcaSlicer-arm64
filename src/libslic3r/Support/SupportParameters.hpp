@@ -24,9 +24,9 @@ struct SupportParameters {
 	        (object_config.support_filament.value == 0 || ! print_config.filament_soluble.get_at(object_config.support_filament.value - 1));
 
 	    {
-	        // Orca: fin support has its own interface layer count; it never prints bottom interfaces.
+	        // Orca: fin support never prints bottom interfaces.
 	        const bool fin_support = object_config.support_type.value == stFins;
-	        this->num_top_interface_layers    = std::max(0, fin_support ? object_config.support_fin_interface_layers.value : object_config.support_interface_top_layers.value);
+	        this->num_top_interface_layers    = std::max(0, object_config.support_interface_top_layers.value);
 	        this->num_bottom_interface_layers = fin_support ? 0 : object_config.support_interface_bottom_layers < 0 ? 
 	            num_top_interface_layers : object_config.support_interface_bottom_layers;
 	        this->has_top_contacts              = num_top_interface_layers    > 0;

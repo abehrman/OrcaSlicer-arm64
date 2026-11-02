@@ -1052,7 +1052,6 @@ bool PrintObject::invalidate_state_by_config_options(
             || opt_key == "support_fin_height"
             || opt_key == "support_fin_lean_side_only"
             || opt_key == "support_fin_cross_spacing"
-            || opt_key == "support_fin_interface_layers"
             || opt_key == "support_fin_fallback"
             || opt_key == "support_object_xy_distance"
             || opt_key == "support_object_first_layer_gap"
@@ -1384,9 +1383,7 @@ void PrintObject::detect_surfaces_type()
                 if (m_config.support_type.value == stNormalAuto)
                     bottom_is_fully_supported &= !m_config.bridge_no_support.value;
                 else if (m_config.support_type.value == stTreeAuto) {
-                    bottom_is_fully_supported &= ((m_config.support_type.value == stFins ?
-                                                       m_config.support_fin_interface_layers.value :
-                                                       m_config.support_interface_top_layers.value) > 0 &&
+                    bottom_is_fully_supported &= m_config.support_interface_top_layers.value > 0 &&
                                                   m_config.max_bridge_length.value == 0 &&
                                                   m_config.support_critical_regions_only.value == false);
                 }
@@ -4465,7 +4462,6 @@ void PrintObject::_generate_support_material()
                 m_config.support_type.value = fallback == fsfTree ? stTreeAuto : stNormalAuto;
                 if (fallback == fsfTree)
                     m_config.support_style.value = smsTreeOrganic;
-                m_config.support_interface_top_layers.value = original_config.support_fin_interface_layers.value;
                 if (fallback == fsfTree) {
                     TreeSupport tree_support(*this, m_slicing_params);
                     tree_support.throw_on_cancel = [this]() { this->throw_if_canceled(); };
