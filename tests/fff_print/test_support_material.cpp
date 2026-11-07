@@ -288,6 +288,8 @@ TEST_CASE("SupportMaterial: fin support is built from walls no thicker than the 
         // Fins are whole two-line loops; with the 0.4 mm default line this is one loop, about 0.7 mm.
         { "support_fin_thickness",     0.7 },
         { "support_fin_tine_spacing", 0 },
+        // The top interface is a solid pad; this checks the fin walls alone.
+        { "support_interface_top_layers", 0 },
     });
     size_t checked = 0;
     for (const SupportLayer *layer : print.objects().front()->support_layers()) {
@@ -364,6 +366,8 @@ TEST_CASE("SupportMaterial: fin support holds a cube tipped onto an edge regardl
         { "support_fin_fallback", "none" },
         { "layer_height",            0.2 },
         { "support_threshold_angle", 30 },
+        // The top interface is a solid pad; this checks the fin walls alone.
+        { "support_interface_top_layers", 0 },
     });
     const PrintObject &object = *print.objects().front();
     REQUIRE(! object.support_layers().empty());
@@ -488,7 +492,7 @@ TEST_CASE("SupportMaterial: fin support prints interface layers under the object
         { "support_fin_fallback", "none" },
         { "support_fin_tine_spacing", 0 },
             { "layer_height",                 0.2 },
-            { "support_fin_interface_layers", layers },
+            { "support_interface_top_layers", layers },
         });
         return fin_interface_layer_count(*print.objects().front());
     };
@@ -521,9 +525,7 @@ TEST_CASE("SupportMaterial: fin interfaces use their own layer count and normal 
                                                  {"support_fin_fallback", "none"},
                                                  {"layer_height", 0.2},
                                                  {"support_fin_tine_spacing", 0},
-                                                 {"support_fin_interface_layers", 3},
-                                                 // These normal-support settings are hidden when fins are selected.
-                                                 {"support_interface_top_layers", 0},
+                                                 {"support_interface_top_layers", 3},
                                                  {"support_interface_bottom_layers", 0},
                                                  {"support_interface_spacing", spacing},
                                                  {"support_interface_pattern", pattern},
@@ -568,8 +570,7 @@ TEST_CASE("SupportMaterial: fin interface flow uses the interface nozzle with no
                                              {"support_fin_fallback", "none"},
                                              {"support_fin_tine_spacing", 0},
                                              {"layer_height", 0.2},
-                                             {"support_fin_interface_layers", 2},
-                                             {"support_interface_top_layers", 0},
+                                             {"support_interface_top_layers", 2},
                                              {"support_filament", 1},
                                              {"support_interface_filament", 2},
                                              {"nozzle_diameter", "0.4,0.6"},
@@ -594,8 +595,7 @@ TEST_CASE("SupportMaterial: supplemental supports reach above a fin height limit
                                                  {"support_type", "fins"},
                                                  {"support_fin_fallback", fallback},
                                                  {"support_fin_height", 4},
-                                                 {"support_fin_interface_layers", 2},
-                                                 {"support_interface_top_layers", 0},
+                                                 {"support_interface_top_layers", 2},
                                                  {"support_threshold_angle", 45},
                                                  {"support_on_build_plate_only", true},
                                                  {"layer_height", 0.2},
@@ -603,7 +603,7 @@ TEST_CASE("SupportMaterial: supplemental supports reach above a fin height limit
         const PrintObject& object = *print.objects().front();
         REQUIRE(!object.support_layers().empty());
         CHECK(object.config().support_type.value == stFins);
-        CHECK(object.config().support_interface_top_layers.value == 0);
+        CHECK(object.config().support_interface_top_layers.value == 2);
         CHECK(object.fin_support_reserved().empty());
         if (std::string(fallback) == "none") {
             CHECK(object.support_layers().back()->print_z <= 4. + EPSILON);
@@ -628,7 +628,7 @@ TEST_CASE("SupportMaterial: supplemental supports preserve a fin-covered region"
                                                  {"enable_support", 1},
                                                  {"support_type", "fins"},
                                                  {"support_fin_fallback", fallback},
-                                                 {"support_fin_interface_layers", 2},
+                                                 {"support_interface_top_layers", 2},
                                                  {"support_fin_tine_spacing", 0},
                                                  {"layer_height", 0.2},
                                              });
@@ -659,7 +659,7 @@ TEST_CASE("SupportMaterial: fins and supplemental supports coexist on separate o
                                              {"support_type", "fins"},
                                              {"support_fin_fallback", "none"},
                                              {"support_fin_height", 4},
-                                             {"support_fin_interface_layers", 2},
+                                             {"support_interface_top_layers", 2},
                                              {"support_fin_tine_spacing", 0},
                                              {"layer_height", 0.2},
                                          });
@@ -681,7 +681,7 @@ TEST_CASE("SupportMaterial: fins and supplemental supports coexist on separate o
                                                  {"support_type", "fins"},
                                                  {"support_fin_fallback", fallback},
                                                  {"support_fin_height", 4},
-                                                 {"support_fin_interface_layers", 2},
+                                                 {"support_interface_top_layers", 2},
                                                  {"support_fin_tine_spacing", 0},
                                                  {"layer_height", 0.2},
                                              });
@@ -745,7 +745,6 @@ TEST_CASE("SupportMaterial: fin attachments use interface material without top d
                                                  {"support_type", "fins"},
                                                  {"support_fin_fallback", fallback},
                                                  {"layer_height", 0.2},
-                                                 {"support_fin_interface_layers", 0},
                                                  {"support_interface_top_layers", 0},
                                                  {"support_fin_tine_spacing", 3},
                                                  {"support_fin_tine_depth", 0.3},

@@ -5269,7 +5269,8 @@ void PrintConfigDef::init_fff_params()
     def->label = L("Skip prime below idle time");
     def->category = L("Tool change priming");
     def->tooltip = L("Leave out the prime extrusion when the new tool was parked for less than this estimated time. "
-                     "The rest of the tool change prime G-code still runs, so the retraction is still restored. Set to zero to always prime.");
+                     "The rest of the tool change prime G-code still runs, so the retraction is still restored. A park at least as long as the "
+                     "idle time always gets the full prime, whatever this is set to. Set to zero to always prime.");
     def->sidetext = "s"; // seconds, don't need translation
     def->min = 0;
     def->mode = comAdvanced;
@@ -5839,17 +5840,6 @@ void PrintConfigDef::init_fff_params()
     def->enum_labels   = {L("Off"), L("Tree (organic)"), L("Normal")};
     def->mode          = comSimple;
     def->set_default_value(new ConfigOptionEnum<FinSupportFallback>(fsfTree));
-
-    def = this->add("support_fin_interface_layers", coInt);
-    def->label = L("Interface layers");
-    def->category = L("Support");
-    def->tooltip = L("Number of interface layers printed across the tops of the fins where the object rests on them, "
-                     "so an overhang sits on a flat deck instead of the fin edges. They use the support interface "
-                     "filament, pattern and spacing. Also sets the top interface layer count for supplemental supports. Set to 0 to disable.");
-    def->sidetext = L("layers");
-    def->min = 0;
-    def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionInt(0));
 
     def = this->add("independent_support_layer_height", coBool);
     def->label = L("Independent support layer height");
@@ -7934,6 +7924,8 @@ void PrintConfigDef::handle_legacy(t_config_option_key &opt_key, std::string &va
         "bed_size",
         "print_center", "g0", "wipe_tower_per_color_wipe", 
         "support_sharp_tails","support_remove_small_overhangs", "support_with_sheath",
+        // Orca: fins use support_interface_top_layers.
+        "support_fin_interface_layers",
         "tree_support_collision_resolution", "tree_support_with_infill",
         "max_volumetric_speed", "max_print_speed",
         "support_closing_radius",

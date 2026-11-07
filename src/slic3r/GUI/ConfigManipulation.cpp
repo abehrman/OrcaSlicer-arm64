@@ -742,7 +742,7 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, co
     const bool  have_fin_fallback = support_is_fins && fin_fallback != fsfNone;
     if (have_fin_fallback)
         support_type = fin_fallback == fsfTree ? stTreeAuto : stNormalAuto;
-    const bool have_top_interface = config->opt_int(support_is_fins ? "support_fin_interface_layers" : "support_interface_top_layers") > 0;
+    const bool have_top_interface = config->opt_int("support_interface_top_layers") > 0;
     bool       have_support_interface = have_top_interface ||
                                         ((!support_is_fins || have_fin_fallback) && config->opt_int("support_interface_bottom_layers") > 0);
     bool have_support_soluble = have_support_material && config->opt_float("support_top_z_distance") == 0;
@@ -784,17 +784,16 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, co
 
     // Fin support: fins are placed from the object shape, not from overhang detection or support patterns.
     for (auto el : { "support_fin_spacing", "support_fin_thickness", "support_fin_tine_spacing", "support_fin_height", "support_fin_lean_side_only",
-                     "support_fin_cross_spacing", "support_fin_interface_layers", "support_fin_fallback" })
+                     "support_fin_cross_spacing", "support_fin_fallback" })
         toggle_line(el, support_is_fins);
     const bool fin_tines = support_is_fins && config->opt_float("support_fin_tine_spacing") > 0.;
     for (auto el : { "support_fin_tine_depth", "support_fin_tine_base_rows" })
         toggle_line(el, fin_tines);
-    for (auto el : { "support_style", "support_threshold_angle", "support_threshold_overlap", "support_on_build_plate_only", "support_base_pattern", "support_base_pattern_spacing", "support_expansion", "support_angle", "support_interface_top_layers", "support_interface_bottom_layers", "support_bottom_interface_spacing", "tree_support_wall_count" })
+    for (auto el : { "support_style", "support_threshold_angle", "support_threshold_overlap", "support_on_build_plate_only", "support_base_pattern", "support_base_pattern_spacing", "support_expansion", "support_angle", "support_interface_bottom_layers", "support_bottom_interface_spacing", "tree_support_wall_count" })
         toggle_line(el, !support_is_fins || have_fin_fallback);
     for (auto el :
          {"support_bottom_z_distance", "support_interface_min_area", "support_remove_small_overhang", "independent_support_layer_height"})
         toggle_line(el, !support_is_fins || have_fin_fallback);
-    toggle_line("support_interface_top_layers", !support_is_fins);
     toggle_line("support_style", !support_is_fins || (have_fin_fallback && fin_fallback == fsfNormal));
     // Fin interface layers use the normal support interface filament, pattern and spacing.
     toggle_line("support_interface_filament", !support_is_fins || have_support_interface || fin_tines);
