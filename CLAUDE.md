@@ -55,7 +55,8 @@ A setting spans several places; missing one produces silent bugs:
 ### Profiles
 
 - `resources/profiles/<Vendor>.json` is the vendor index; `resources/profiles/<Vendor>/{machine,process,filament}/` hold presets that inherit from `fdm_*.json` bases (Snapmaker: `fdm_U1.json`, `fdm_a250.json`, etc.).
-- The app caches system profiles in the user data dir (`~/Library/Application Support/Snapmaker_Orca/system` on macOS) and only refreshes them when the `version` in `resources/profiles/Snapmaker.json` is newer. **Bump that version whenever any Snapmaker preset changes**, or a local run keeps using stale G-code templates.
+- Snapmaker presets (`Snapmaker.json` and `Snapmaker/{machine,process,filament}/`) live in the `submodules/Profiles` submodule and are mirrored into `resources/profiles/` at configure and build time (`cmake/SyncSnapmakerProfiles.cmake`); edit them in the submodule and commit a new gitlink. On `local/mac-fins-and-support-tower` the submodule points at `abehrman/snapmaker-profiles` branch `u1-toolchange-prime`, which carries the U1 tool change prime G-code.
+- The app caches system profiles in the user data dir (`~/Library/Application Support/Snapmaker_Orca/system` on macOS) and only refreshes them when the `version` in `Snapmaker.json` is newer. **Bump that version whenever any Snapmaker preset changes**, or a local run keeps using stale G-code templates.
 - CI validates profiles (`check_profiles.yml`, `scripts/orca_extra_profile_check.py`, `Snapmaker_Orca_profile_validator`).
 
 ## Conventions

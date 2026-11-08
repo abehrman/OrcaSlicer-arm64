@@ -1,0 +1,4 @@
+[submodule "submodules/Profiles"]
+	path = submodules/Profiles
+	url = https://github.com/abehrman/snapmaker-profiles.git
+	branch = u1-toolchange-prime
