@@ -74,13 +74,14 @@ add_executable(support_override_notice_tests test_support_override_notice.cpp)
 target_include_directories(support_override_notice_tests PRIVATE
     ${PROJECT_SOURCE_DIR}/src ${wxWidgets_INCLUDE_DIRS})
 target_compile_definitions(support_override_notice_tests PRIVATE ${wxWidgets_DEFINITIONS} wxDEBUG_LEVEL=0)
-set(_SUPPORT_NOTICE_WX_LIBS ${wxWidgets_LIBRARIES})
+# wxWidgets lists OpenGL.framework as a plain library, which the macOS linker rejects; link OpenGL::GL instead.
+set(_TEST_WX_LIBS ${wxWidgets_LIBRARIES})
 if (APPLE)
-    list(REMOVE_ITEM _SUPPORT_NOTICE_WX_LIBS OpenGL.framework)
+    list(REMOVE_ITEM _TEST_WX_LIBS OpenGL.framework)
 endif()
 find_package(OpenGL REQUIRED)
 target_link_libraries(support_override_notice_tests PRIVATE
-    ${_SUPPORT_NOTICE_WX_LIBS} OpenGL::GL JPEG::JPEG PNG::PNG ZLIB::ZLIB ${EXPAT_LIBRARIES})
+    ${_TEST_WX_LIBS} OpenGL::GL JPEG::JPEG PNG::PNG ZLIB::ZLIB ${EXPAT_LIBRARIES})
 add_test(NAME support_override_notice COMMAND support_override_notice_tests)
 set_tests_properties(support_override_notice PROPERTIES SKIP_RETURN_CODE 77)
 
@@ -102,7 +103,7 @@ if (WIN32 AND wxWidgets_LIB_DIR AND wxWidgets_CONFIGURATION)
 endif ()
 target_link_libraries(${_FILAMENT_TEST_NAME}_tests PRIVATE
     Catch2::Catch2WithMain
-    ${wxWidgets_LIBRARIES}
+    ${_TEST_WX_LIBS} OpenGL::GL
     JPEG::JPEG
     PNG::PNG
     ZLIB::ZLIB
@@ -133,6 +134,6 @@ if (WIN32 AND wxWidgets_LIB_DIR AND wxWidgets_CONFIGURATION)
 endif ()
 target_link_libraries(${_FILAMENT_SORT_TEST_NAME}_tests PRIVATE
     Catch2::Catch2WithMain
-    ${wxWidgets_LIBRARIES})
+    ${_TEST_WX_LIBS} OpenGL::GL)
 set_property(TARGET ${_FILAMENT_SORT_TEST_NAME}_tests PROPERTY FOLDER "tests")
 catch_discover_tests(${_FILAMENT_SORT_TEST_NAME}_tests TEST_PREFIX "${_FILAMENT_SORT_TEST_NAME}: " EXTRA_ARGS ${CATCH_EXTRA_ARGS})
