@@ -93,7 +93,9 @@ TreeModelVolumes::TreeModelVolumes(
 
 #else
     {
-        m_anti_overhang = print_object.slice_support_blockers();
+        // Only user blockers. The columns reserved for a fin fallback already removed the overhangs the fins hold;
+        // as collision or no-landing areas they would cut branches under the overhangs the fins left.
+        m_anti_overhang = print_object.slice_support_volumes(ModelVolumeType::SUPPORT_BLOCKER);
         TreeSupportMeshGroupSettings mesh_settings(print_object);
         const TreeSupportSettings config{ mesh_settings, print_object.slicing_parameters() };
         m_current_min_xy_dist = config.xy_min_distance;
@@ -111,8 +113,15 @@ TreeModelVolumes::TreeModelVolumes(
         outlines.assign(num_layers, Polygons{});
         tbb::parallel_for(tbb::blocked_range<size_t>(num_raft_layers, num_layers, std::min<size_t>(1, std::max<size_t>(16, num_layers / (8 * tbb::this_task_arena::max_concurrency())))),
             [&](const tbb::blocked_range<size_t> &range) {
-            for (size_t layer_idx = range.begin(); layer_idx < range.end(); ++ layer_idx)
-                outlines[layer_idx] = polygons_simplify(to_polygons(print_object.get_layer(layer_idx - num_raft_layers)->lslices), mesh_settings.resolution, polygons_strictly_simple);
+            for (size_t layer_idx = range.begin(); layer_idx < range.end(); ++ layer_idx) {
+                const size_t object_layer_idx = layer_idx - num_raft_layers;
+                Polygons     outline          = to_polygons(print_object.get_layer(object_layer_idx)->lslices);
+                // Fins built before this fallback are solid to the branches, like the object.
+                const std::vector<Polygons> &fins = print_object.fin_support_obstacles();
+                if (object_layer_idx < fins.size() && ! fins[object_layer_idx].empty())
+                    outline = union_(outline, fins[object_layer_idx]);
+                outlines[layer_idx] = polygons_simplify(outline, mesh_settings.resolution, polygons_strictly_simple);
+            }
         });
     }
 #endif

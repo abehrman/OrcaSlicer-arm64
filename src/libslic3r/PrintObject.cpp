@@ -4461,6 +4461,13 @@ void PrintObject::_generate_support_material()
             // even when canceled; keep the fin layers alive until fallback generation succeeds.
             SupportLayerPtrs fin_layers;
             fin_layers.swap(m_support_layers);
+            m_fin_support_obstacles.assign(m_layers.size(), Polygons());
+            for (const SupportLayer *fin : fin_layers) {
+                auto it = std::lower_bound(m_layers.begin(), m_layers.end(), fin->print_z - EPSILON,
+                                           [](const Layer *layer, double z) { return layer->print_z < z; });
+                if (it != m_layers.end() && std::abs((*it)->print_z - fin->print_z) < EPSILON)
+                    append(m_fin_support_obstacles[it - m_layers.begin()], to_polygons(fin->support_islands));
+            }
             const PrintObjectConfig original_config = m_config;
             try {
                 m_config.support_type.value = fallback == fsfTree ? stTreeAuto : stNormalAuto;
@@ -4477,12 +4484,14 @@ void PrintObject::_generate_support_material()
             } catch (...) {
                 m_config = original_config;
                 m_fin_support_reserved.clear();
+                std::vector<Polygons>().swap(m_fin_support_obstacles);
                 this->clear_support_layers();
                 m_support_layers.swap(fin_layers);
                 throw;
             }
             m_config = original_config;
             m_fin_support_reserved.clear();
+            std::vector<Polygons>().swap(m_fin_support_obstacles);
             // Both generators can emit the same Z. Combine those layers so G-code has one
             // support-layer entry per height, preserving the paths' interface/material roles.
             m_support_layers.insert(m_support_layers.end(), fin_layers.begin(), fin_layers.end());
