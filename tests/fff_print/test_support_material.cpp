@@ -970,7 +970,7 @@ static std::vector<double> floating_support_layers(const PrintObject &object)
     return out;
 }
 
-TEST_CASE("SupportMaterial: the tree fallback may grow through the columns reserved for fins", "[SupportMaterial][Fins]")
+TEST_CASE("SupportMaterial: the tree fallback keeps out of the columns reserved for fins", "[SupportMaterial][Fins]")
 {
     // Fins alone: their islands per layer, and the columns they reserve from the fallback.
     const auto          fins_only  = slice_with_fins(two_tier_table(), { { "support_on_build_plate_only", false } });
@@ -991,10 +991,13 @@ TEST_CASE("SupportMaterial: the tree fallback may grow through the columns reser
     // The upper slab is supported: there is support between the slabs.
     CHECK(support_area_at(object, 15.) > 0.);
 
-    // The reserved columns only take the fins' overhangs away from the fallback. Its branches still
-    // grow through the columns beside the fins instead of braiding around them.
+    // The fallback treats the fins as solid, so its trunks stay out of the fins' columns instead of
+    // spreading into them and braiding around the blades. The first layer is skipped: its support
+    // is widened for bed adhesion.
     double tree_in_columns = 0.;
     for (const SupportLayer *layer : object.support_layers()) {
+        if (layer == object.support_layers().front())
+            continue;
         auto     it   = fins.find(scale_(layer->print_z));
         Polygons tree = to_polygons(layer->support_islands);
         if (it != fins.end())
@@ -1002,7 +1005,7 @@ TEST_CASE("SupportMaterial: the tree fallback may grow through the columns reser
         tree_in_columns += area(intersection(tree, reserved)) / (scale_(1.) * scale_(1.));
     }
     CAPTURE(tree_in_columns);
-    CHECK(tree_in_columns > 10.);
+    CHECK(tree_in_columns < 50.);
 
     const std::vector<double> floating = floating_support_layers(object);
     CAPTURE(floating);
