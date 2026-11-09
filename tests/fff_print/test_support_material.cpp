@@ -3,6 +3,7 @@
 
 #include "libslic3r/ClipperUtils.hpp"
 #include <algorithm>
+#include <map>
 #include <memory>
 #include "libslic3r/GCodeReader.hpp"
 #include "libslic3r/Layer.hpp"
@@ -916,4 +917,94 @@ TEST_CASE("SupportMaterial: fin support leaves a small tunnel to bridge, even wi
             }
         }
     }
+}
+
+// The support table with a second, higher slab on a post standing on the first one. The fins hold the
+// lower slab; the upper slab hangs over the lower slab (inside the fins' reserved columns) and past its
+// +X edge, so the fallback has to support it.
+static TriangleMesh two_tier_table()
+{
+    TriangleMesh model = support_table();
+    TriangleMesh post  = make_cube(4, 4, 8.2);  post.translate(13, 13, 11.9);  // post z 11.9..20.1
+    TriangleMesh upper = make_cube(31, 20, 2);  upper.translate(5, 5, 20);    // upper slab z 20..22
+    model.merge(post);
+    model.merge(upper);
+    return model;
+}
+
+// Print Z of each support layer with more than 1 mm² of base support paths that stand on nothing: no
+// support path on the layer below and no object within the bottom Z gap. The first layer stands on the
+// bed. Interface decks, which bridge between fins by design, may span gaps and are not counted.
+static std::vector<double> floating_support_layers(const PrintObject &object)
+{
+    const auto              layers     = object.support_layers();
+    const double            object_gap = object.config().support_bottom_z_distance.value + object.config().layer_height.value + EPSILON;
+    std::vector<Polygons>   printed(layers.size());
+    std::vector<Polygons>   base(layers.size());
+    for (size_t i = 0; i < layers.size(); ++ i)
+        for (const ExtrusionEntity *path : layers[i]->support_fills.flatten().entities) {
+            Polygons covered = path->polygons_covered_by_width(float(SCALED_EPSILON));
+            if (path->role() == erSupportMaterial)
+                append(base[i], covered);
+            append(printed[i], std::move(covered));
+        }
+    std::vector<double> out;
+    for (size_t i = 1; i < layers.size(); ++ i) {
+        if (base[i].empty())
+            continue;
+        Polygons ground;
+        for (size_t j = 0; j < i; ++ j)
+            if (layers[j]->print_z > layers[i]->bottom_z() - 0.05)
+                append(ground, printed[j]);
+        for (const Layer *object_layer : object.layers())
+            if (object_layer->print_z > layers[i]->bottom_z() - object_gap && object_layer->print_z < layers[i]->print_z - EPSILON)
+                append(ground, to_polygons(object_layer->lslices));
+        double floating = 0.;
+        for (const ExPolygon &island : diff_ex(union_(base[i]), offset(ground, float(scale_(1.)))))
+            // Ignore slivers that the path clean-up leaves behind.
+            if (island.area() > scale_(0.5) * scale_(0.5))
+                floating += island.area();
+        if (floating > scale_(1.) * scale_(1.))
+            out.push_back(layers[i]->print_z);
+    }
+    return out;
+}
+
+TEST_CASE("SupportMaterial: the tree fallback may grow through the columns reserved for fins", "[SupportMaterial][Fins]")
+{
+    // Fins alone: their islands per layer, and the columns they reserve from the fallback.
+    const auto          fins_only  = slice_with_fins(two_tier_table(), { { "support_on_build_plate_only", false } });
+    PrintObject        &fin_object = const_cast<PrintObject&>(*fins_only->objects().front());
+    std::map<coord_t, Polygons> fins;
+    for (const SupportLayer *layer : fin_object.support_layers())
+        fins[scale_(layer->print_z)] = to_polygons(layer->support_islands);
+    Polygons reserved;
+    generate_fin_support(fin_object, &reserved);
+    REQUIRE(! reserved.empty());
+
+    const auto print = slice_with_fins(two_tier_table(), {
+        { "support_fin_fallback",        "tree" },
+        { "support_on_build_plate_only", false },
+    });
+    const PrintObject &object = *print->objects().front();
+    REQUIRE(! object.support_layers().empty());
+    // The upper slab is supported: there is support between the slabs.
+    CHECK(support_area_at(object, 15.) > 0.);
+
+    // The reserved columns only take the fins' overhangs away from the fallback. Its branches still
+    // grow through the columns beside the fins instead of braiding around them.
+    double tree_in_columns = 0.;
+    for (const SupportLayer *layer : object.support_layers()) {
+        auto     it   = fins.find(scale_(layer->print_z));
+        Polygons tree = to_polygons(layer->support_islands);
+        if (it != fins.end())
+            tree = diff(tree, offset(it->second, float(scale_(0.5))));
+        tree_in_columns += area(intersection(tree, reserved)) / (scale_(1.) * scale_(1.));
+    }
+    CAPTURE(tree_in_columns);
+    CHECK(tree_in_columns > 10.);
+
+    const std::vector<double> floating = floating_support_layers(object);
+    CAPTURE(floating);
+    CHECK(floating.empty());
 }
