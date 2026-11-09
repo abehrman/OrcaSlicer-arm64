@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+Linear: team Adam Behrman (ADA), project P-ADA-7 (3D Printing)
+
 ## Overview
 
 Snapmaker_Orca is Snapmaker's fork of OrcaSlicer (itself a Bambu Studio fork): a C++17 FDM slicer with a wxWidgets GUI, built with CMake. The full source tree is present, including the GUI in `src/slic3r/GUI/`. Vendored dependency sources live in `deps/` and `deps_src/`; don't edit them without mirroring upstream. `AGENTS.md` has the repo's contributor guidelines (clang-format: 4-space indent, 140 columns; sentence-style commit subjects) and `tests/CLAUDE.md` has Catch2 rules (read it before writing tests; it still says "OrcaSlicer" but applies here).
