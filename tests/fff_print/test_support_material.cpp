@@ -1094,4 +1094,61 @@ TEST_CASE("SupportMaterial: a slender fin under a tall part hands its region to 
             CHECK(floating_support_layers(object).empty());
             CHECK_NOTHROW(Slic3r::Test::gcode(*print));
         }
+
+TEST_CASE("SupportMaterial: the normal fallback stands beside fins without cutting into their columns", "[SupportMaterial][Fins]")
+{
+    // Fins alone: their islands per layer, and the columns they reserve from the fallback.
+    const auto          fins_only  = slice_with_fins(two_tier_table(), { { "support_on_build_plate_only", false } });
+    PrintObject        &fin_object = const_cast<PrintObject&>(*fins_only->objects().front());
+    std::map<coord_t, Polygons> fins;
+    for (const SupportLayer *layer : fin_object.support_layers())
+        fins[scale_(layer->print_z)] = to_polygons(layer->support_islands);
+    Polygons reserved;
+    generate_fin_support(fin_object, &reserved);
+    REQUIRE(! reserved.empty());
+
+    const auto print = slice_with_fins(two_tier_table(), {
+        { "support_fin_fallback",        "normal" },
+        { "support_on_build_plate_only", false },
+    });
+    const PrintObject &object = *print->objects().front();
+    REQUIRE(! object.support_layers().empty());
+
+    // Between the slabs the upper slab hangs over the lower one, inside the fins' columns. The fallback
+    // supports it there, standing on the lower slab, instead of being cut away by the whole columns.
+    double between_slabs = 0.;
+    for (const SupportLayer *layer : object.support_layers())
+        if (layer->print_z > 15.) {
+            between_slabs = area(intersection(to_polygons(layer->support_islands), reserved)) / (scale_(1.) * scale_(1.));
+            break;
+        }
+    CAPTURE(between_slabs);
+    CHECK(between_slabs > 200.);
+
+    // The overhang the fins hold, the lower slab, gets no fallback support of its own: below it there is
+    // nothing in the slab's footprint but the fins. The first layer is skipped: it is widened for bed adhesion.
+    BoundingBox lower_slab;
+    for (const Layer *layer : object.layers())
+        if (layer->print_z > 11.) {
+            lower_slab = get_extents(layer->lslices);
+            break;
+        }
+    REQUIRE(lower_slab.defined);
+    const Polygons footprint { lower_slab.polygon() };
+    double under_lower_slab = 0.;
+    for (const SupportLayer *layer : object.support_layers()) {
+        if (layer == object.support_layers().front() || layer->print_z > 10.)
+            continue;
+        auto     it      = fins.find(scale_(layer->print_z));
+        Polygons support = to_polygons(layer->support_islands);
+        if (it != fins.end())
+            support = diff(support, offset(it->second, float(scale_(0.5))));
+        under_lower_slab += area(intersection(support, footprint)) / (scale_(1.) * scale_(1.));
+    }
+    CAPTURE(under_lower_slab);
+    CHECK(under_lower_slab < 50.);
+
+    const std::vector<double> floating = floating_support_layers(object);
+    CAPTURE(floating);
+    CHECK(floating.empty());
 }
