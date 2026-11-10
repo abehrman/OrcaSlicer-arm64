@@ -1070,15 +1070,26 @@ TEST_CASE("SupportMaterial: a slender fin under a tall part hands its region to 
     CHECK(has_slender_fin_warning(fin_object));
     const double fin_area = ledge_support_area_at(fin_object, 20.);
     REQUIRE(fin_area > 0.);
+    {
+        // With a fallback the fin generator drops the blade and keeps the ledge out of the reserved columns.
+        const auto   regen  = slice("none");
+        PrintObject &object = const_cast<PrintObject&>(*regen->objects().front());
+        Polygons     reserved;
+        object.clear_support_layers();
+        CHECK(! generate_fin_support(object, &reserved));
+        CHECK(ledge_support_area_at(object, 20.) == 0.);
+        const BoundingBox column = get_extents(object.layers().front()->lslices);
+        const Point       under_ledge(column.max.x() + scaled<coord_t>(1.5), column.center().y());
+        CHECK(intersection(reserved, Polygons{ BoundingBox(under_ledge - Point(1000, 1000), under_ledge + Point(1000, 1000)).polygon() }).empty());
+    }
     for (const char *fallback : { "normal", "tree" }) {
         CAPTURE(fallback);
         const auto print = slice(fallback);
         const PrintObject &object = *print->objects().front();
         CHECK(! has_slender_fin_warning(object));
-        // The fallback took the ledge: it reaches the ledge, and the blade is gone at mid-height.
+        // The fallback took the ledge: it supports it all the way up.
         CHECK(object.support_layers().back()->print_z > 33.);
         CHECK(ledge_support_area_at(object, 20.) > 0.);
-        CHECK(ledge_support_area_at(object, 20.) != Catch::Approx(fin_area).margin(1e-3));
         CHECK_NOTHROW(Slic3r::Test::gcode(*print));
     }
 }
