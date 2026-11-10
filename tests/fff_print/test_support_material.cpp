@@ -1095,3 +1095,57 @@ TEST_CASE("SupportMaterial: a slender fin under a tall part hands its region to 
             CHECK_NOTHROW(Slic3r::Test::gcode(*print));
         }
 }
+
+TEST_CASE("SupportMaterial: the normal fallback stands beside fins without cutting into their columns", "[SupportMaterial][Fins]")
+{
+    // Fins alone: their islands per layer, and the columns they reserve from the fallback.
+    const auto          fins_only  = slice_with_fins(two_tier_table(), { { "support_on_build_plate_only", false } });
+    PrintObject        &fin_object = const_cast<PrintObject&>(*fins_only->objects().front());
+    std::map<coord_t, Polygons> fins;
+    for (const SupportLayer *layer : fin_object.support_layers())
+        fins[scale_(layer->print_z)] = to_polygons(layer->support_islands);
+    Polygons reserved;
+    generate_fin_support(fin_object, &reserved);
+    REQUIRE(! reserved.empty());
+
+    const auto print = slice_with_fins(two_tier_table(), {
+        { "support_fin_fallback",        "normal" },
+        { "support_on_build_plate_only", false },
+    });
+    const PrintObject &object = *print->objects().front();
+    REQUIRE(! object.support_layers().empty());
+
+    // Between the slabs the upper slab hangs over the lower one, inside the fins' columns. The fallback
+    // supports it there, standing on the lower slab, instead of being cut away by the whole columns.
+    double between_slabs = 0.;
+    for (const SupportLayer *layer : object.support_layers())
+        if (layer->print_z > 15.) {
+            between_slabs = area(intersection(to_polygons(layer->support_islands), reserved)) / (scale_(1.) * scale_(1.));
+            break;
+        }
+    CAPTURE(between_slabs);
+    CHECK(between_slabs > 100.);
+
+    // The overhangs the fins hold get no fallback support of their own: below the lower slab, nothing in
+    // the fins' columns but the fins. The rest of the lower slab is the fallback's to hold, and its support
+    // may reach just over the columns' edge, so look 2 mm inside them. The first layer is skipped: it is
+    // widened for bed adhesion.
+    const Polygons inside_columns = shrink(reserved, float(scale_(2.)));
+    REQUIRE(! inside_columns.empty());
+    double under_fins = 0.;
+    for (const SupportLayer *layer : object.support_layers()) {
+        if (layer == object.support_layers().front() || layer->print_z > 10.)
+            continue;
+        auto     it      = fins.find(scale_(layer->print_z));
+        Polygons support = to_polygons(layer->support_islands);
+        if (it != fins.end())
+            support = diff(support, offset(it->second, float(scale_(0.5))));
+        under_fins += area(intersection(support, inside_columns)) / (scale_(1.) * scale_(1.));
+    }
+    CAPTURE(under_fins);
+    CHECK(under_fins < 10.);
+
+    const std::vector<double> floating = floating_support_layers(object);
+    CAPTURE(floating);
+    CHECK(floating.empty());
+}

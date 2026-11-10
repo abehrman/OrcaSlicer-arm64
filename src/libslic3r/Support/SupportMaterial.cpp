@@ -3126,6 +3126,7 @@ void PrintObjectSupportMaterial::trim_support_layers_by_object(
         tbb::blocked_range<size_t>(0, nonempty_layers.size()),
         [this, &object, &nonempty_layers, gap_extra_above, gap_extra_below, gap_xy_scaled](const tbb::blocked_range<size_t>& range) {
             size_t idx_object_layer_overlapping = size_t(-1);
+            const std::vector<Polygons> &fin_obstacles = object.fin_support_obstacles();
 
             auto is_layers_overlap = [](const SupportGeneratorLayer& support_layer, const Layer& object_layer, coordf_t bridging_height = 0.f) -> bool {
                 if (std::abs(support_layer.print_z - object_layer.print_z) < EPSILON)
@@ -3156,6 +3157,12 @@ void PrintObjectSupportMaterial::trim_support_layers_by_object(
                     const Layer &object_layer = *object.layers()[i];
                     if (object_layer.bottom_z() > support_layer.print_z + gap_extra_above - EPSILON)
                         break;
+
+                    // Fins built before this fallback keep the XY gap like the object. Only the fins
+                    // themselves: trimming by the whole reserved columns cut base support under the
+                    // overhangs the fins left, so it could neither pass beside nor rest on a fin.
+                    if (i < fin_obstacles.size() && ! fin_obstacles[i].empty())
+                        polygons_append(polygons_trimming, offset(fin_obstacles[i], gap_xy_scaled, SUPPORT_SURFACES_OFFSET_PARAMETERS));
 
                     // Skip the object layer directly supported by this top contact layer: its lslices
                     // cover the overhang itself, so trimming by it would cut away the contact area.
@@ -3204,7 +3211,6 @@ void PrintObjectSupportMaterial::trim_support_layers_by_object(
                 // perimeter's width. $support contains the full shape of support
                 // material, thus including the width of its foremost extrusion.
                 // We leave a gap equal to a full extrusion width.
-                append(polygons_trimming, object.fin_support_reserved());
                 support_layer.polygons = diff(support_layer.polygons, polygons_trimming);
             }
         });

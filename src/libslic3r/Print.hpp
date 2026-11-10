@@ -525,7 +525,8 @@ public:
     }
     const Polygons&             fin_support_reserved() const { return m_fin_support_reserved; }
     // The fins already generated, one entry per object layer, while a fallback generator runs; empty otherwise.
-    // Tree support treats them like the object: branches route around them and may rest on them.
+    // Tree support treats them like the object: branches route around them and may rest on them. Normal support
+    // keeps the XY gap from them.
     const std::vector<Polygons>& fin_support_obstacles() const { return m_fin_support_obstacles; }
     std::vector<Polygons>       slice_support_enforcers() const { return this->slice_support_volumes(ModelVolumeType::SUPPORT_ENFORCER); }
 
