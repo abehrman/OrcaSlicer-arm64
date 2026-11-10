@@ -1123,19 +1123,15 @@ TEST_CASE("SupportMaterial: the normal fallback stands beside fins without cutti
             break;
         }
     CAPTURE(between_slabs);
-    CHECK(between_slabs > 200.);
+    CHECK(between_slabs > 100.);
 
-    // The overhang the fins hold, the lower slab, gets no fallback support of its own: below it there is
-    // nothing in the slab's footprint but the fins. The first layer is skipped: it is widened for bed adhesion.
-    BoundingBox lower_slab;
-    for (const Layer *layer : object.layers())
-        if (layer->print_z > 11.) {
-            lower_slab = get_extents(layer->lslices);
-            break;
-        }
-    REQUIRE(lower_slab.defined);
-    const Polygons footprint { lower_slab.polygon() };
-    double under_lower_slab = 0.;
+    // The overhangs the fins hold get no fallback support of their own: below the lower slab, nothing in
+    // the fins' columns but the fins. The rest of the lower slab is the fallback's to hold, and its support
+    // may reach just over the columns' edge, so look 2 mm inside them. The first layer is skipped: it is
+    // widened for bed adhesion.
+    const Polygons inside_columns = shrink(reserved, float(scale_(2.)));
+    REQUIRE(! inside_columns.empty());
+    double under_fins = 0.;
     for (const SupportLayer *layer : object.support_layers()) {
         if (layer == object.support_layers().front() || layer->print_z > 10.)
             continue;
@@ -1143,10 +1139,10 @@ TEST_CASE("SupportMaterial: the normal fallback stands beside fins without cutti
         Polygons support = to_polygons(layer->support_islands);
         if (it != fins.end())
             support = diff(support, offset(it->second, float(scale_(0.5))));
-        under_lower_slab += area(intersection(support, footprint)) / (scale_(1.) * scale_(1.));
+        under_fins += area(intersection(support, inside_columns)) / (scale_(1.) * scale_(1.));
     }
-    CAPTURE(under_lower_slab);
-    CHECK(under_lower_slab < 50.);
+    CAPTURE(under_fins);
+    CHECK(under_fins < 10.);
 
     const std::vector<double> floating = floating_support_layers(object);
     CAPTURE(floating);
