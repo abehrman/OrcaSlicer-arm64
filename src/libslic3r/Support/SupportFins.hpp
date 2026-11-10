@@ -13,7 +13,8 @@ class PrintObject;
 std::vector<bool> fin_tine_layers(const PrintObject &object);
 
 // Support type "fins": generates breakaway fins for the object and stores them as its support layers.
-// See SupportFins.cpp for the geometry. Returns true if some fin is slender enough to fail mid-print.
+// See SupportFins.cpp for the geometry. With `reserved_columns` (a fallback is set), slender fins are left
+// out and their overhang goes to the fallback. Returns true if a fin slender enough to fail mid-print was kept.
 bool generate_fin_support(PrintObject& object, Polygons* reserved_columns = nullptr);
 
 } // namespace Slic3r

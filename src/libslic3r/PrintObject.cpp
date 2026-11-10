@@ -4455,7 +4455,7 @@ void PrintObject::_generate_support_material()
         if (generate_fin_support(*this, fallback == fsfNone ? nullptr : &m_fin_support_reserved))
             this->active_step_add_warning(PrintStateBase::WarningLevel::NON_CRITICAL,
                 Slic3r::format(L("Some fins on object %s are more than 10 times taller than they are long and may wobble or break during printing. "
-                                 "Consider tree support, a lower fin height, or a support blocker."), this->model_object()->name));
+                                 "Set a fin fallback (tree or normal support) to replace them, or use a lower fin height or a support blocker."), this->model_object()->name));
         if (fallback != fsfNone) {
             // Each generator owns its layers while running. Restore the object configuration
             // even when canceled; keep the fin layers alive until fallback generation succeeds.

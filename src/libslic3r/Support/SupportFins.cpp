@@ -43,7 +43,8 @@
 //     stable (Slant3D). Rails get a tine every kTinePitch along them.
 //  6. With support_interface_top_layers, the fin region right under the object is printed as
 //     interface layers across the fin tops.
-//  7. The judge marks the overhang no fin holds; with a fallback, those columns go to tree or normal support.
+//  7. A fin more than kSlenderRatio times taller than it is long would wobble; with a fallback it is dropped.
+//     The judge then marks the overhang no fin holds; with a fallback, those columns go to tree or normal support.
 // The result is printed through the common support toolpath generator.
 
 #include "SupportFins.hpp"
@@ -748,6 +749,42 @@ bool generate_fin_support(PrintObject& object, Polygons* reserved_columns)
             shaped[i] = std::move(out);
         }
     });
+
+    // A fin much taller than it is long is a free-standing blade that can wobble or snap mid-print,
+    // e.g. under a small feature high above the bed. Measure each fin above the foot; its length is
+    // its area over its thickness, which holds for rows, rails and rim pieces alike.
+    Polygons slender_fins, sturdy_fins;
+    {
+        size_t first = 0;
+        while (first < num_layers && (shaped[first].empty() || layers[first]->bottom_z() < kBaseHeight - EPSILON))
+            ++ first;
+        if (first < num_layers)
+            for (const ExPolygon &fin : union_ex(shaped[first])) {
+                const double   length = fin.area() / double(thickness);
+                const Polygons column = offset(fin, float(spacing));
+                size_t         top    = first;
+                while (top + 1 < num_layers && ! intersection(shaped[top + 1], column).empty())
+                    ++ top;
+                append(layers[top]->print_z > kSlenderRatio * unscale<double>(length) ? slender_fins : sturdy_fins, to_polygons(fin));
+            }
+    }
+    // With a fallback, a slender fin is not printed: its wall, foot and tines are dropped, and the judge
+    // below hands the overhang it held to the fallback. Fins standing next to it keep their feet.
+    if (reserved_columns != nullptr && ! slender_fins.empty()) {
+        const Polygons zone  = diff(offset(slender_fins, float(thickness) + tine_reach), offset(sturdy_fins, float(thickness) + 0.5f * float(spacing)));
+        const double   speck = double(2 * spacing) * double(2 * spacing);
+        for (size_t i = 0; i < num_layers; ++ i) {
+            if (shaped[i].empty())
+                continue;
+            shaped[i] = diff(shaped[i], zone);
+            shaped[i].erase(std::remove_if(shaped[i].begin(), shaped[i].end(), [&](const Polygon &p) { return std::abs(p.area()) < speck; }), shaped[i].end());
+            if (! tine_contacts[i].empty())
+                tine_contacts[i] = diff(tine_contacts[i], zone);
+        }
+        BOOST_LOG_TRIVIAL(info) << "Fin support - " << union_ex(slender_fins).size() << " slender fin(s) left to the fallback";
+        slender_fins.clear();
+    }
+
     // 7. Judge, when a fallback can take what the fins do not hold.
     if (reserved_columns != nullptr) {
         const Polygons uncovered = judge_fins(object, outlines, overhangs, shaped, top_gap, min_width);
@@ -771,26 +808,7 @@ bool generate_fin_support(PrintObject& object, Polygons* reserved_columns)
         reserve_holes();
     }
     regions.clear();
-
-    // A fin much taller than it is long is a free-standing blade that can wobble or snap mid-print,
-    // e.g. under a small feature high above the bed. Measure each fin above the foot; its length is
-    // its area over its thickness, which holds for rows, rails and rim pieces alike.
-    bool slender = false;
-    {
-        size_t first = 0;
-        while (first < num_layers && (shaped[first].empty() || layers[first]->bottom_z() < kBaseHeight - EPSILON))
-            ++ first;
-        if (first < num_layers)
-            for (const ExPolygon &fin : union_ex(shaped[first])) {
-                const double   length = fin.area() / double(thickness);
-                const Polygons column = offset(fin, float(spacing));
-                size_t         top    = first;
-                while (top + 1 < num_layers && ! intersection(shaped[top + 1], column).empty())
-                    ++ top;
-                if (layers[top]->print_z > kSlenderRatio * unscale<double>(length))
-                    slender = true;
-            }
-    }
+    const bool slender = ! slender_fins.empty();
 
     // Hand the fins to the common support pipeline as base layers, one per object layer.
     SupportGeneratorLayerStorage layer_storage;

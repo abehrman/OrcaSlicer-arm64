@@ -1011,3 +1011,74 @@ TEST_CASE("SupportMaterial: the tree fallback keeps out of the columns reserved 
     CAPTURE(floating);
     CHECK(floating.empty());
 }
+
+// A 40 mm column with a 10 mm long prism hanging 3 mm off its top. The prism's underside is 45 degrees,
+// so the overhang is not level and gets no rim walls: the only fin under it is about 3 mm long and
+// 34 mm tall, far more than 10 times taller than it is long.
+static TriangleMesh column_with_ledge()
+{
+    TriangleMesh column = make_cube(6, 12, 40);
+    TriangleMesh ledge  = make_cube(4, 10, 4);
+    ledge.translate(-2, 0, -2);
+    ledge.rotate_y(float(M_PI / 4));
+    const BoundingBoxf3 b = ledge.bounding_box();
+    ledge.translate(float(9.3 - b.max.x()), float(1. - b.min.y()), float(40. - b.max.z()));
+    column.merge(ledge);
+    return column;
+}
+
+static bool has_slender_fin_warning(const PrintObject &object)
+{
+    for (const PrintStateBase::Warning &warning : object.step_state_with_warnings(posSupportMaterial).warnings)
+        if (warning.message.find("taller than they are long") != std::string::npos)
+            return true;
+    return false;
+}
+
+// Support under the ledge, beside the column, at height z.
+static double ledge_support_area_at(const PrintObject &object, double z)
+{
+    // The column's footprint on the bed; the ledge sticks out past its +X side.
+    BoundingBox column = get_extents(object.layers().front()->lslices);
+    BoundingBox beside(Point(column.max.x() + scaled<coord_t>(0.1), column.min.y() - scaled<coord_t>(1.)),
+                       Point(column.max.x() + scaled<coord_t>(6.), column.max.y() + scaled<coord_t>(1.)));
+    for (const SupportLayer *layer : object.support_layers())
+        if (layer->print_z > z)
+            return area(intersection_ex(layer->support_islands, Polygons{ beside.polygon() }));
+    return 0.;
+}
+
+TEST_CASE("SupportMaterial: a slender fin under a tall part hands its region to the fallback", "[SupportMaterial][Fins]")
+{
+    auto slice = [](const char *fallback) {
+        auto print = std::make_unique<Slic3r::Print>();
+        Slic3r::Test::init_and_process_print({ column_with_ledge() }, *print, {
+            { "enable_support",               1 },
+            { "support_type",                 "fins" },
+            { "support_fin_fallback",         fallback },
+            { "support_threshold_angle",      40 },
+            { "support_on_build_plate_only",  true },
+            { "support_interface_top_layers", 0 },
+            { "support_fin_tine_spacing",     0 },
+            { "layer_height",                 0.2 },
+        });
+        return print;
+    };
+    const auto fins = slice("none");
+    const PrintObject &fin_object = *fins->objects().front();
+    // Fins alone: one thin blade under the ledge, flagged as slender.
+    CHECK(has_slender_fin_warning(fin_object));
+    const double fin_area = ledge_support_area_at(fin_object, 20.);
+    REQUIRE(fin_area > 0.);
+    for (const char *fallback : { "normal", "tree" }) {
+        CAPTURE(fallback);
+        const auto print = slice(fallback);
+        const PrintObject &object = *print->objects().front();
+        CHECK(! has_slender_fin_warning(object));
+        // The fallback took the ledge: it reaches the ledge, and the blade is gone at mid-height.
+        CHECK(object.support_layers().back()->print_z > 33.);
+        CHECK(ledge_support_area_at(object, 20.) > 0.);
+        CHECK(ledge_support_area_at(object, 20.) != Catch::Approx(fin_area).margin(1e-3));
+        CHECK_NOTHROW(Slic3r::Test::gcode(*print));
+    }
+}
