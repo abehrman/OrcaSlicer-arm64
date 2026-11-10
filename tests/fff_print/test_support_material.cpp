@@ -1094,6 +1094,7 @@ TEST_CASE("SupportMaterial: a slender fin under a tall part hands its region to 
             CHECK(floating_support_layers(object).empty());
             CHECK_NOTHROW(Slic3r::Test::gcode(*print));
         }
+}
 
 TEST_CASE("SupportMaterial: the normal fallback stands beside fins without cutting into their columns", "[SupportMaterial][Fins]")
 {
