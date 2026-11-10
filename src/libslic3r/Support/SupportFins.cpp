@@ -781,6 +781,16 @@ bool generate_fin_support(PrintObject& object, Polygons* reserved_columns)
             if (! tine_contacts[i].empty())
                 tine_contacts[i] = diff(tine_contacts[i], zone);
         }
+        // An interface deck that stood only on the dropped fins would print in mid-air.
+        const Polygons footing = offset(sturdy_fins, float(spacing));
+        for (Polygons &deck : interfaces)
+            if (! deck.empty()) {
+                Polygons kept;
+                for (const ExPolygon &piece : union_ex(deck))
+                    if (! footing.empty() && ! intersection(to_polygons(piece), footing).empty())
+                        append(kept, to_polygons(piece));
+                deck = std::move(kept);
+            }
         BOOST_LOG_TRIVIAL(info) << "Fin support - " << union_ex(slender_fins).size() << " slender fin(s) left to the fallback";
         slender_fins.clear();
     }

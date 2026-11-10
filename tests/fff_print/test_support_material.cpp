@@ -1050,7 +1050,7 @@ static double ledge_support_area_at(const PrintObject &object, double z)
 
 TEST_CASE("SupportMaterial: a slender fin under a tall part hands its region to the fallback", "[SupportMaterial][Fins]")
 {
-    auto slice = [](const char *fallback) {
+    auto slice = [](const char *fallback, int interface_layers = 0) {
         auto print = std::make_unique<Slic3r::Print>();
         Slic3r::Test::init_and_process_print({ column_with_ledge() }, *print, {
             { "enable_support",               1 },
@@ -1058,7 +1058,7 @@ TEST_CASE("SupportMaterial: a slender fin under a tall part hands its region to 
             { "support_fin_fallback",         fallback },
             { "support_threshold_angle",      40 },
             { "support_on_build_plate_only",  true },
-            { "support_interface_top_layers", 0 },
+            { "support_interface_top_layers", interface_layers },
             { "support_fin_tine_spacing",     0 },
             { "layer_height",                 0.2 },
         });
@@ -1082,14 +1082,16 @@ TEST_CASE("SupportMaterial: a slender fin under a tall part hands its region to 
         const Point       under_ledge(column.max.x() + scaled<coord_t>(1.5), column.center().y());
         CHECK(intersection(reserved, Polygons{ BoundingBox(under_ledge - Point(1000, 1000), under_ledge + Point(1000, 1000)).polygon() }).empty());
     }
-    for (const char *fallback : { "normal", "tree" }) {
-        CAPTURE(fallback);
-        const auto print = slice(fallback);
-        const PrintObject &object = *print->objects().front();
-        CHECK(! has_slender_fin_warning(object));
-        // The fallback took the ledge: it supports it all the way up.
-        CHECK(object.support_layers().back()->print_z > 33.);
-        CHECK(ledge_support_area_at(object, 20.) > 0.);
-        CHECK_NOTHROW(Slic3r::Test::gcode(*print));
-    }
+    for (const char *fallback : { "normal", "tree" })
+        for (int interface_layers : { 0, 2 }) {
+            CAPTURE(fallback, interface_layers);
+            const auto print = slice(fallback, interface_layers);
+            const PrintObject &object = *print->objects().front();
+            CHECK(! has_slender_fin_warning(object));
+            // The fallback took the ledge: it supports it all the way up.
+            CHECK(object.support_layers().back()->print_z > 33.);
+            CHECK(ledge_support_area_at(object, 20.) > 0.);
+            CHECK(floating_support_layers(object).empty());
+            CHECK_NOTHROW(Slic3r::Test::gcode(*print));
+        }
 }
