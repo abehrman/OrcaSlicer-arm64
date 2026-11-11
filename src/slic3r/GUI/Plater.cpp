@@ -10210,6 +10210,11 @@ struct Plater::priv
     bool m_ignore_event{false};
     bool m_slice_all{false};
     bool m_is_slicing {false};
+    // Live slicing (ADA-390): a slice started by the edit timer in Prepare runs quietly. The Prepare status panel
+    // shows its progress instead of the slicing progress notification, and a slice cancelled by the next edit
+    // doesn't announce itself. Errors are still reported.
+    bool m_starting_live_slice {false};
+    bool m_live_slice_quiet {false};
     bool m_is_publishing {false};
     int m_is_RightClickInLeftUI{-1};
     int m_cur_slice_plate;
@@ -10475,6 +10480,8 @@ struct Plater::priv
     }
     void update_print_volume_state();
     void schedule_background_process();
+    // Live slicing (ADA-390): load or clear the toolpaths drawn in Prepare so they match the current plate's slice.
+    void sync_prepare_toolpaths();
     // Update background processing thread from the current config and Model.
     enum UpdateBackgroundProcessReturnState {
         // update_background_process() reports, that the Print / SLAPrint was updated in a way,
@@ -10868,7 +10875,9 @@ Plater::priv::priv(Plater *q, MainFrame *main_frame)
             this->background_process_timer.Start(BACKGROUND_PROCESS_DEBOUNCE_MS, wxTIMER_ONE_SHOT);
             return;
         }
+        this->m_starting_live_slice = this->background_processing_enabled() && this->current_panel == this->view3D;
         this->update_restart_background_process(false, false);
+        this->m_starting_live_slice = false;
     });
 
     update();
@@ -13854,7 +13863,7 @@ unsigned int Plater::priv::update_background_process(bool force_validation, bool
     }
 
     // Live slicing (ADA-390): drop the Prepare toolpaths as soon as the slice no longer matches the plate.
-    q->sync_prepare_toolpaths();
+    sync_prepare_toolpaths();
     if (view3D != nullptr)
         view3D->get_canvas3d()->set_as_dirty();
 
@@ -14690,6 +14699,11 @@ void Plater::priv::set_current_panel(wxPanel* panel, bool no_slice)
                     }
                }
                 else {
+                    // Live slicing (ADA-390): a quiet background slice is still running; show its progress in Preview.
+                    if (this->m_live_slice_quiet && this->background_process.running()) {
+                        this->m_live_slice_quiet = false;
+                        notification_manager->set_slicing_progress_began();
+                    }
                     //reset current plate to the slicing plate
                     int plate_index = this->background_process.get_current_plate()->get_index();
                     this->partplate_list.select_plate(plate_index);
@@ -15191,7 +15205,8 @@ void Plater::priv::on_slicing_update(SlicingStatusEvent &evt)
             return;
         }
 
-        notification_manager->set_slicing_progress_percentage(evt.status.text, (float)evt.status.percent / 100.0f);
+        if (!m_live_slice_quiet)
+            notification_manager->set_slicing_progress_percentage(evt.status.text, (float)evt.status.percent / 100.0f);
 
         // update slicing percent
         PartPlateList& plate_list = wxGetApp().plater()->get_partplate_list();
@@ -15313,6 +15328,7 @@ void Plater::priv::on_export_finished(wxCommandEvent& evt)
 
 void Plater::priv::on_slicing_began()
 {
+    m_live_slice_quiet = m_starting_live_slice;
     if(!m_slice_timing_active)
         m_slice_start_time    = std::chrono::steady_clock::now();
     m_slice_timing_active = true;
@@ -15322,8 +15338,12 @@ void Plater::priv::on_slicing_began()
     bool is_first_plate = m_cur_slice_plate == 0;
     bool slice_all = q->m_only_gcode ? m_slice_all_only_has_gcode : m_slice_all;
     bool need_change_dailytips = !(slice_all && !is_first_plate);
-    notification_manager->set_slicing_progress_began();
-    notification_manager->update_slicing_notif_dailytips(need_change_dailytips);
+    if (m_live_slice_quiet)
+        notification_manager->set_slicing_progress_hidden();
+    else {
+        notification_manager->set_slicing_progress_began();
+        notification_manager->update_slicing_notif_dailytips(need_change_dailytips);
+    }
     // Live slicing (ADA-390): refresh the status in Prepare.
     if (view3D != nullptr)
         view3D->get_canvas3d()->set_as_dirty();
@@ -15503,7 +15523,10 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
             m_slice_timing_active = false;
         }
     }
-    notification_manager->set_slicing_progress_export_possible();
+    if (m_live_slice_quiet)
+        notification_manager->set_slicing_progress_hidden();
+    else
+        notification_manager->set_slicing_progress_export_possible();
 
     // Reset the "export G-code path" name, so that the automatic background processing will be enabled again.
     this->background_process.reset_export();
@@ -15545,7 +15568,10 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
     }
     if (evt.cancelled()) {
         BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", cancel event, status: %1%") % evt.status();
-        this->notification_manager->set_slicing_progress_canceled(_u8L("Slicing Canceled"));
+        if (m_live_slice_quiet)
+            this->notification_manager->set_slicing_progress_hidden();
+        else
+            this->notification_manager->set_slicing_progress_canceled(_u8L("Slicing Canceled"));
         is_finished = true;
     }
 
@@ -15704,7 +15730,8 @@ void Plater::priv::on_process_completed(SlicingProcessCompletedEvent &evt)
         }
     }
     // Live slicing (ADA-390): show the finished slice in Prepare, and refresh its status there.
-    q->sync_prepare_toolpaths();
+    m_live_slice_quiet = false;
+    sync_prepare_toolpaths();
     if (view3D != nullptr)
         view3D->get_canvas3d()->set_as_dirty();
     BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(", exit.");
@@ -21465,6 +21492,8 @@ void Plater::export_toolpaths_to_obj() const
 //BBS: add multiple plate reslice logic
 bool Plater::reslice()
 {
+    // The user asked for this slice: report its progress the usual way, even if a live slice is already running.
+    p->m_live_slice_quiet = false;
     p->partplate_list.set_filament_group_dirty(false);
     BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", Line %1%: enter, process_completed_with_error=%2%")%__LINE__ %p->process_completed_with_error;
     // There is "invalid data" button instead "slice now"
@@ -23855,28 +23884,31 @@ Plater::LiveSliceStatus Plater::get_live_slice_status(int& percent)
     return LiveSliceStatus::Stale;
 }
 
-void Plater::sync_prepare_toolpaths()
+void Plater::sync_prepare_toolpaths() { p->sync_prepare_toolpaths(); }
+
+// Runs from update_background_process(), which the priv constructor already calls, so it must not go through q->p.
+void Plater::priv::sync_prepare_toolpaths()
 {
-    if (p->view3D == nullptr)
+    if (view3D == nullptr || q == nullptr)
         return;
-    GLCanvas3D* canvas = p->view3D->get_canvas3d();
+    GLCanvas3D* canvas = view3D->get_canvas3d();
     if (canvas == nullptr)
         return;
 
-    PartPlate*            plate     = p->partplate_list.get_curr_plate();
-    GCodeProcessorResult* result    = p->background_process.get_current_gcode_result();
-    const int             plate_idx = p->partplate_list.get_curr_plate_index();
-    const bool ready = p->background_processing_enabled() && p->printer_technology == ptFFF &&
+    PartPlate*            plate     = partplate_list.get_curr_plate();
+    GCodeProcessorResult* result    = background_process.get_current_gcode_result();
+    const int             plate_idx = partplate_list.get_curr_plate_index();
+    const bool ready = background_processing_enabled() && printer_technology == ptFFF &&
                        wxGetApp().app_config->get_bool("prepare_show_toolpaths") &&
-                       plate != nullptr && result != nullptr && plate->is_slice_result_valid() &&
-                       !p->background_process.running() && p->background_process.finished();
+                       plate != nullptr && result != nullptr && background_process.current_print() != nullptr &&
+                       plate->is_slice_result_valid() && !background_process.running() && background_process.finished();
     if (!ready) {
         canvas->reset_prepare_toolpaths();
         return;
     }
     if (canvas->has_prepare_toolpaths() && canvas->prepare_toolpaths_result_id() == result->id && canvas->prepare_toolpaths_plate() == plate_idx)
         return;
-    canvas->load_prepare_toolpaths(*result, get_extruder_colors_from_plater_config(result), plate_idx);
+    canvas->load_prepare_toolpaths(*result, q->get_extruder_colors_from_plater_config(result), plate_idx);
 }
 
 void Plater::on_background_processing_changed()

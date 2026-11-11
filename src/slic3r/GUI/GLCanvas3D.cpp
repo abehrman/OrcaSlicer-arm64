@@ -4470,6 +4470,8 @@ void GLCanvas3D::_render_live_slice_panel()
     }
 
     Plater* plater = wxGetApp().plater();
+    if (plater == nullptr)
+        return;
     int percent = 0;
     const Plater::LiveSliceStatus status = plater->get_live_slice_status(percent);
     if (status == Plater::LiveSliceStatus::Off || status == Plater::LiveSliceStatus::Idle)
@@ -4561,7 +4563,7 @@ void GLCanvas3D::_render_live_slice_panel()
     }
 
     imgui.end();
-    ImGui::PopStyleColor(9);
+    ImGui::PopStyleColor(8);
     ImGui::PopStyleVar(3);
 }
 
