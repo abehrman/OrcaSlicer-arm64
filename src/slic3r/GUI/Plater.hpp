@@ -535,6 +535,20 @@ public:
     void changed_object(int obj_idx);
     void changed_objects(const std::vector<size_t>& object_idxs);
     void schedule_background_process(bool schedule = true);
+    // Live slicing (ADA-390): state of the background slice of the current plate, shown in Prepare.
+    enum class LiveSliceStatus {
+        Off,     // background slicing is turned off in Preferences
+        Idle,    // nothing to slice on the current plate
+        Stale,   // the plate changed and the slice has not restarted yet
+        Running, // the background slice is running
+        Current, // the slice matches the plate
+        Invalid, // the plate can't be sliced as it is (see the notifications)
+    };
+    LiveSliceStatus get_live_slice_status(int& percent);
+    // Load or clear the toolpaths drawn in Prepare so they match the current plate's slice.
+    void sync_prepare_toolpaths();
+    // Called after the "background_processing" preference changes.
+    void on_background_processing_changed();
     bool is_background_process_update_scheduled() const;
     void suppress_background_process(const bool stop_background_process) ;
     /* -1: send current gcode if not specified

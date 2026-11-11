@@ -889,6 +889,9 @@ public:
 
     bool is_legend_enabled() const { return m_legend_enabled; }
     void enable_legend(bool enable) { m_legend_enabled = enable; }
+    // Live slicing (ADA-390): draw only the toolpaths (no shells, legend, sliders or tool marker),
+    // so the Prepare canvas can overlay the background slice on the model.
+    void render_toolpaths_only();
     float get_legend_height() { return m_legend_height; }
 
     void export_toolpaths_to_obj(const char* filename) const;

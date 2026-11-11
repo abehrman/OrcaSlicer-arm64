@@ -130,11 +130,13 @@ void AppConfig::set_defaults()
             set_bool("autocenter", true);
 #endif
 
-#ifdef SUPPORT_BACKGROUND_PROCESSING
-        // Disable background processing by default as it is not stable.
+        // Live slicing (ADA-390): slice in the background while the user edits in Prepare.
+        // It can be turned off in Preferences.
         if (get("background_processing").empty())
-            set_bool("background_processing", false);
-#endif
+            set_bool("background_processing", true);
+        // Draw the background slice's toolpaths over the model in Prepare. Off until the user turns it on.
+        if (get("prepare_show_toolpaths").empty())
+            set_bool("prepare_show_toolpaths", false);
 
         if (get("drop_project_action").empty())
             set_bool("drop_project_action", true);

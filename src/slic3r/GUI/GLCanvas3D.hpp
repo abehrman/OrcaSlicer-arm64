@@ -669,6 +669,16 @@ private:
     bool m_initialized;
     //BBS: add flag to controll rendering
     bool m_render_preview{ true };
+    // Live slicing (ADA-390): toolpaths of the background slice drawn in the Prepare canvas.
+    struct PrepareToolpaths
+    {
+        bool         loaded{ false };
+        unsigned int result_id{ 0 };
+        int          plate_idx{ -1 };
+        // Index of the highest layer drawn; the model on the plate is cut away below it.
+        int          top_layer{ 0 };
+    };
+    PrepareToolpaths m_prepare_toolpaths;
     bool m_enable_render { true };
     bool m_apply_zoom_to_volumes_filter;
     bool m_picking_enabled;
@@ -902,6 +912,14 @@ public:
     GCodeViewer& get_gcode_viewer() { return m_gcode_viewer; }
     void init_gcode_viewer(ConfigOptionMode mode, Slic3r::PresetBundle* preset_bundle) { m_gcode_viewer.init(mode, preset_bundle); }
     void reset_gcode_toolpaths() { m_gcode_viewer.reset(); }
+
+    // Live slicing (ADA-390): the Prepare canvas shows the background slice's toolpaths over the model.
+    // It loads the result into this canvas's own GCodeViewer, the same renderer the Preview canvas uses.
+    void load_prepare_toolpaths(const GCodeProcessorResult& gcode_result, const std::vector<std::string>& str_tool_colors, int plate_idx);
+    void reset_prepare_toolpaths();
+    bool has_prepare_toolpaths() const { return m_prepare_toolpaths.loaded; }
+    unsigned int prepare_toolpaths_result_id() const { return m_prepare_toolpaths.result_id; }
+    int prepare_toolpaths_plate() const { return m_prepare_toolpaths.plate_idx; }
     const GCodeViewer::SequentialView& get_gcode_sequential_view() const { return m_gcode_viewer.get_sequential_view(); }
     void update_gcode_sequential_view_current(unsigned int first, unsigned int last) { m_gcode_viewer.update_sequential_view_current(first, last); }
 
@@ -1472,6 +1490,10 @@ private:
 #endif // ENABLE_RENDER_SELECTION_CENTER
     void _check_and_update_toolbar_icon_scale();
     void _render_overlays();
+    // Live slicing (ADA-390)
+    bool _is_prepare_toolpaths_shown() const;
+    bool _is_volume_on_prepare_toolpaths_plate(const GLVolume& volume) const;
+    void _render_live_slice_panel();
     void _render_style_editor();
     bool _render_volumes_for_picking(const Camera& camera) const;
     void _render_current_gizmo() const;
