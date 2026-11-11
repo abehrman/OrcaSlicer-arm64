@@ -4390,6 +4390,181 @@ void GLCanvas3D::load_gcode_preview(const GCodeProcessorResult& gcode_result, co
     request_extra_frame();
 }
 
+void GLCanvas3D::load_prepare_toolpaths(const GCodeProcessorResult& gcode_result, const std::vector<std::string>& str_tool_colors, int plate_idx)
+{
+    PartPlate* plate = wxGetApp().plater()->get_partplate_list().get_plate(plate_idx);
+    if (m_canvas_type != ECanvasType::CanvasView3D || plate == nullptr || fff_print() == nullptr)
+        return;
+
+    // Same loading steps as load_gcode_preview(), without the Preview-only warnings and sliders.
+    m_gcode_viewer.reset();
+    m_gcode_viewer.init(wxGetApp().get_mode(), wxGetApp().preset_bundle);
+    m_gcode_viewer.load(gcode_result, *this->fff_print(), wxGetApp().plater()->build_volume(), plate->get_exclude_areas(),
+        wxGetApp().get_mode(), false, false);
+    m_gcode_viewer.refresh(gcode_result, str_tool_colors);
+
+    m_prepare_toolpaths.loaded    = m_gcode_viewer.has_data();
+    m_prepare_toolpaths.result_id = gcode_result.id;
+    m_prepare_toolpaths.plate_idx = plate_idx;
+    const std::vector<double>& zs = m_gcode_viewer.get_layers_zs();
+    m_prepare_toolpaths.top_layer = zs.empty() ? 0 : int(zs.size()) - 1;
+    BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(": plate %1%, result id %2%, layers %3%, loaded %4%")
+        % plate_idx % gcode_result.id % zs.size() % m_prepare_toolpaths.loaded;
+
+    InvalidateSceneCache();
+    set_as_dirty();
+    request_extra_frame();
+}
+
+void GLCanvas3D::reset_prepare_toolpaths()
+{
+    if (!m_prepare_toolpaths.loaded && !m_gcode_viewer.has_data())
+        return;
+    m_gcode_viewer.reset();
+    m_prepare_toolpaths = PrepareToolpaths();
+    InvalidateSceneCache();
+    set_as_dirty();
+    request_extra_frame();
+}
+
+bool GLCanvas3D::_is_prepare_toolpaths_shown() const
+{
+    if (m_canvas_type != ECanvasType::CanvasView3D || !m_prepare_toolpaths.loaded || !m_gcode_viewer.has_data())
+        return false;
+    if (!wxGetApp().app_config->get_bool("prepare_show_toolpaths"))
+        return false;
+    if (m_layers_editing.is_enabled())
+        return false;
+    // Painting, cutting, measuring and the other tools need the model itself.
+    switch (m_gizmos.get_current_type()) {
+    case GLGizmosManager::Undefined:
+    case GLGizmosManager::Move:
+    case GLGizmosManager::Rotate:
+    case GLGizmosManager::Scale: return true;
+    default: return false;
+    }
+}
+
+bool GLCanvas3D::_is_volume_on_prepare_toolpaths_plate(const GLVolume& volume) const
+{
+    if (volume.is_modifier)
+        return false;
+    const int object_id = volume.composite_id.object_id;
+    if (volume.is_wipe_tower)
+        return object_id - 1000 == m_prepare_toolpaths.plate_idx;
+    PartPlate* plate = wxGetApp().plater()->get_partplate_list().get_plate(m_prepare_toolpaths.plate_idx);
+    return plate != nullptr && plate->contain_instance(object_id, volume.composite_id.instance_id);
+}
+
+void GLCanvas3D::_render_live_slice_panel()
+{
+    if (m_canvas_type != ECanvasType::CanvasView3D || !wxGetApp().is_editor())
+        return;
+    // Stay out of the way of the tools that have their own panels.
+    switch (m_gizmos.get_current_type()) {
+    case GLGizmosManager::Undefined:
+    case GLGizmosManager::Move:
+    case GLGizmosManager::Rotate:
+    case GLGizmosManager::Scale: break;
+    default: return;
+    }
+
+    Plater* plater = wxGetApp().plater();
+    int percent = 0;
+    const Plater::LiveSliceStatus status = plater->get_live_slice_status(percent);
+    if (status == Plater::LiveSliceStatus::Off || status == Plater::LiveSliceStatus::Idle)
+        return;
+
+    ImVec4 dotColor;
+    std::string statusText;
+    switch (status) {
+    case Plater::LiveSliceStatus::Running:
+        dotColor   = ImVec4(0.96f, 0.62f, 0.15f, 1.0f);
+        statusText = (boost::format(_u8L("Slicing... %1%%%")) % percent).str();
+        break;
+    case Plater::LiveSliceStatus::Current:
+        dotColor   = ImVec4(0.18f, 0.72f, 0.36f, 1.0f);
+        statusText = _u8L("Slice up to date");
+        break;
+    case Plater::LiveSliceStatus::Invalid:
+        dotColor   = ImVec4(0.89f, 0.25f, 0.22f, 1.0f);
+        statusText = _u8L("Can't slice, see the notifications");
+        break;
+    case Plater::LiveSliceStatus::Stale:
+    default:
+        dotColor   = ImVec4(0.55f, 0.55f, 0.55f, 1.0f);
+        statusText = _u8L("Slice out of date");
+        break;
+    }
+
+    ImGuiWrapper& imgui = *wxGetApp().imgui();
+    const float   sc    = get_scale();
+    const Size    cnvSize = get_canvas_size();
+    imgui.set_next_window_pos(0.5f * cnvSize.get_width(), cnvSize.get_height() - 12.0f * sc, ImGuiCond_Always, 0.5f, 1.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.0f * sc);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f * sc, 6.0f * sc));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f * sc, 4.0f * sc));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, m_is_dark ? ImVec4(0.17f, 0.17f, 0.19f, 0.92f) : ImVec4(1.0f, 1.0f, 1.0f, 0.92f));
+    ImGui::PushStyleColor(ImGuiCol_Text, m_is_dark ? ImVec4(0.88f, 0.88f, 0.88f, 1.0f) : ImVec4(0.15f, 0.15f, 0.15f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_CheckMark, ImGuiWrapper::COL_ORANGE_LIGHT);
+    ImGui::PushStyleColor(ImGuiCol_SliderGrab, ImGuiWrapper::COL_ORANGE_LIGHT);
+    ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, ImGuiWrapper::COL_ORANGE_DARK);
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, m_is_dark ? ImVec4(0.27f, 0.27f, 0.29f, 1.0f) : ImVec4(0.90f, 0.90f, 0.90f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, m_is_dark ? ImVec4(0.32f, 0.32f, 0.34f, 1.0f) : ImVec4(0.85f, 0.85f, 0.85f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, m_is_dark ? ImVec4(0.36f, 0.36f, 0.38f, 1.0f) : ImVec4(0.80f, 0.80f, 0.80f, 1.0f));
+    imgui.begin(std::string("##live_slice_panel"), ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings);
+
+    // Status: a coloured dot and one short line.
+    const float  radius = 4.5f * sc;
+    const ImVec2 cursor = ImGui::GetCursorScreenPos();
+    const float  lineHeight = ImGui::GetTextLineHeight();
+    ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(cursor.x + radius, cursor.y + 0.5f * lineHeight), radius, ImGui::GetColorU32(dotColor));
+    ImGui::Dummy(ImVec2(2.0f * radius, lineHeight));
+    ImGui::SameLine();
+    ImGui::TextUnformatted(statusText.c_str());
+
+    ImGui::SameLine(0.0f, 16.0f * sc);
+    bool showToolpaths = wxGetApp().app_config->get_bool("prepare_show_toolpaths");
+    if (ImGui::Checkbox(_u8L("Show toolpaths").c_str(), &showToolpaths)) {
+        wxGetApp().app_config->set_bool("prepare_show_toolpaths", showToolpaths);
+        // Load outside the render pass.
+        wxGetApp().CallAfter([]() {
+            if (Plater* p = wxGetApp().plater())
+                p->sync_prepare_toolpaths();
+        });
+        InvalidateSceneCache();
+        set_as_dirty();
+    }
+
+    if (_is_prepare_toolpaths_shown()) {
+        const std::vector<double>& zs = m_gcode_viewer.get_layers_zs();
+        const int layerCount = int(zs.size());
+        if (layerCount > 0) {
+            int layer = std::clamp(m_prepare_toolpaths.top_layer, 0, layerCount - 1) + 1;
+            ImGui::TextUnformatted(_u8L("Layer").c_str());
+            ImGui::SameLine();
+            ImGui::PushItemWidth(260.0f * sc);
+            const std::string format = (boost::format("%%d / %1%") % layerCount).str();
+            const bool changed = ImGui::SliderInt("##prepare_layer", &layer, 1, layerCount, format.c_str());
+            ImGui::PopItemWidth();
+            ImGui::SameLine();
+            ImGui::Text("%.2f mm", zs[layer - 1]);
+            if (changed && layer - 1 != m_prepare_toolpaths.top_layer) {
+                m_prepare_toolpaths.top_layer = layer - 1;
+                m_gcode_viewer.set_layers_z_range({ 0u, static_cast<unsigned int>(layer - 1) });
+                InvalidateSceneAndPickingCaches();
+                set_as_dirty();
+                request_extra_frame();
+            }
+        }
+    }
+
+    imgui.end();
+    ImGui::PopStyleColor(9);
+    ImGui::PopStyleVar(3);
+}
+
 void GLCanvas3D::refresh_gcode_preview_render_paths()
 {
     m_gcode_viewer.refresh_render_paths();
@@ -8686,6 +8861,9 @@ void GLCanvas3D::RenderMainSceneContent(const Camera& camera, const MainSceneRen
     glsafe(::glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT));
     _render_background();
     _render_objects(GLVolumeCollection::ERenderType::Opaque, !m_gizmos.is_running());
+    // Live slicing (ADA-390): the background slice's toolpaths, drawn with the same renderer as Preview.
+    if (_is_prepare_toolpaths_shown())
+        m_gcode_viewer.render_toolpaths_only();
     // Must run before the plates are drawn, so the depth buffer holds the objects only
     if (params.softShadowsVisible && _softShadowRenderer != nullptr)
         _softShadowRenderer->RenderObjectShadows(camera, m_is_dark);
@@ -9799,16 +9977,35 @@ void GLCanvas3D::_render_objects(GLVolumeCollection::ERenderType type, bool with
                     //BBS:add assemble view related logic
                     // Cull back faces while rendering Volumes to reduce fragment processing.
                 const Camera& camera = wxGetApp().plater()->get_camera();
-                    const bool lodStateChanged = m_volumes.render(type, false, camera,
-                        [this, canvas_type](const GLVolume& volume) {
+                    // Live slicing (ADA-390): when Prepare shows toolpaths, the model on the sliced plate is drawn
+                    // only above the top drawn layer, so the toolpaths below it are visible.
+                    const bool prepareCutaway = canvas_type == ECanvasType::CanvasView3D && _is_prepare_toolpaths_shown();
+                    bool lodStateChanged = m_volumes.render(type, false, camera,
+                        [this, canvas_type, prepareCutaway](const GLVolume& volume) {
                         if (canvas_type == ECanvasType::CanvasAssembleView) {
                             return !volume.is_modifier && !volume.is_wipe_tower;
                         }
                         else {
+                            if (prepareCutaway && _is_volume_on_prepare_toolpaths_plate(volume))
+                                return false;
                             return (m_render_sla_auxiliaries || volume.composite_id.volume_id >= 0);
                         }
                         },
                         partly_inside_enable);
+                    if (prepareCutaway) {
+                        const std::vector<double>& zs = m_gcode_viewer.get_layers_zs();
+                        const std::array<float, 2> zRange = m_volumes.get_z_range();
+                        const float topZ = zs.empty() ? zRange[0] :
+                            float(zs[std::clamp(m_prepare_toolpaths.top_layer, 0, int(zs.size()) - 1)]);
+                        m_volumes.set_z_range(std::max(zRange[0], topZ), zRange[1]);
+                        lodStateChanged |= m_volumes.render(type, false, camera,
+                            [this](const GLVolume& volume) {
+                            return _is_volume_on_prepare_toolpaths_plate(volume) &&
+                                   (m_render_sla_auxiliaries || volume.composite_id.volume_id >= 0);
+                            },
+                            partly_inside_enable);
+                        m_volumes.set_z_range(zRange[0], zRange[1]);
+                    }
                     if (lodStateChanged)
                         InvalidatePickingBuffer();
                 }
@@ -10022,6 +10219,7 @@ void GLCanvas3D::_render_overlays()
     _render_assemble_info();
 
     _render_prepare_top_toolbars();
+    _render_live_slice_panel();
     //BBS: GUI refactor: GLToolbar
     _render_imgui_select_plate_toolbar();
     _render_return_toolbar();
@@ -12264,7 +12462,9 @@ void GLCanvas3D::_set_warning_notification_if_needed(EWarning warning)
     bool show = false;
     if (!m_volumes.empty()) {
         show = _is_any_volume_outside();
-        show &= m_gcode_viewer.has_data() && m_gcode_viewer.is_contained_in_bed() && m_gcode_viewer.m_conflict_result.has_value();
+        // The Prepare canvas's GCodeViewer only holds the live-slice toolpaths (ADA-390); they must not raise warnings here.
+        show &= m_canvas_type != ECanvasType::CanvasView3D &&
+                m_gcode_viewer.has_data() && m_gcode_viewer.is_contained_in_bed() && m_gcode_viewer.m_conflict_result.has_value();
     } else {
         if (wxGetApp().is_editor()) {
             if (current_printer_technology() != ptSLA) {

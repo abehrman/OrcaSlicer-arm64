@@ -759,6 +759,9 @@ wxBoxSizer *PreferencesDialog::create_item_checkbox(wxString title, wxWindow *pa
             // dialog has closed, and only if the value actually changed.
             m_gcode_gpu_accel_changed = (checkbox->GetValue() != m_gcode_gpu_accel_initial);
 
+        if (param == "background_processing" && wxGetApp().plater() != nullptr)
+            wxGetApp().plater()->on_background_processing_changed();
+
         if (param == "enable_soft_shadows" && wxGetApp().plater() != nullptr)
         {
             GLCanvas3D* const canvas = wxGetApp().plater()->get_view3D_canvas3D();
@@ -1281,6 +1284,8 @@ wxWindow* PreferencesDialog::create_general_page()
 
     auto item_gcode_gpu_accel = create_item_checkbox(_L("GPU-accelerated G-code preview"), page,
         _L("Rebuild toolpath geometry on the GPU: much faster preview loading and lower memory on capable graphics cards. If the preview moves slower than before (for example on basic integrated graphics), turn this off to use the compatible renderer. Takes effect when the preview is reloaded."), 50, "gcode_preview_gpu_accel");
+    auto item_live_slicing = create_item_checkbox(_L("Slice in the background while editing"), page,
+        _L("Reslice the current plate a moment after each change in Prepare, so the result is ready without switching to Preview. Use \"Show toolpaths\" at the bottom of the Prepare view to draw the slice over the model. Turn this off to slice only when you click Slice."), 50, "background_processing");
     auto item_model_station = create_item_checkbox(_L("Enable Snapmaker Space"), page, _L("When enabled, online models will be displayed on the Home page."), 50, "enable_model_station");
 #ifndef __APPLE__
     // macOS has no memory-warning dialog: get_available_physical_memory() returns 0
@@ -1392,6 +1397,7 @@ wxWindow* PreferencesDialog::create_general_page()
     sizer_page->Add(item_step_mesh_setting, 0, wxTOP, FromDIP(3));
     sizer_page->Add(item_auto_arrange, 0, wxTOP, FromDIP(3));
     sizer_page->Add(item_gcode_gpu_accel, 0, wxTOP, FromDIP(3));
+    sizer_page->Add(item_live_slicing, 0, wxTOP, FromDIP(3));
     sizer_page->Add(item_model_station, 0, wxTOP, FromDIP(3));
 #ifndef __APPLE__
     sizer_page->Add(item_memory_warning, 0, wxTOP, FromDIP(3));

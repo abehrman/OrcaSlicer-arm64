@@ -1556,6 +1556,14 @@ void GCodeViewer::render(int canvas_width, int canvas_height, int right_margin)
     render_slider(canvas_width, canvas_height);
 }
 
+void GCodeViewer::render_toolpaths_only()
+{
+    if (m_roles.empty())
+        return;
+    glsafe(::glEnable(GL_DEPTH_TEST));
+    render_toolpaths();
+}
+
 #define ENABLE_CALIBRATION_THUMBNAIL_OUTPUT 0
 #if ENABLE_CALIBRATION_THUMBNAIL_OUTPUT
 static void debug_calibration_output_thumbnail(const ThumbnailData& thumbnail_data)
