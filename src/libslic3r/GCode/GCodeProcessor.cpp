@@ -732,7 +732,6 @@ void GCodeProcessor::apply_config(const PrintConfig& config)
     // sanity check
     if(m_preheat_steps < 1)
         m_preheat_steps = 1;
-    m_toolchange_prime_length_min = config.toolchange_prime_length_min;
     m_toolchange_prime_idle_time = config.toolchange_prime_idle_time;
     m_toolchange_prime_skip_time = config.toolchange_prime_skip_time;
     m_result.backtrace_enabled = m_preheat_time > 0 && (m_is_XL_printer || (!m_single_extruder_multi_material && extruders_count > 1));
@@ -1213,7 +1212,6 @@ void GCodeProcessor::reset()
     m_preheat_time = 0.f;
     m_delta_temperature = 0;
     m_preheat_steps = 1;
-    m_toolchange_prime_length_min = 0.f;
     m_toolchange_prime_idle_time = 0.f;
     m_toolchange_prime_skip_time = 0.f;
 
@@ -4657,9 +4655,11 @@ void GCodeProcessor::run_post_process()
         }
         if (boost::starts_with(gcode_line, ";" + Toolchange_Prime_Start_Tag)) {
             int   next = -1, prev = -1;
-            float max_length = 0.0f;
+            float max_length = 0.0f, tag_min_length = 0.0f;
             const bool first_use = gcode_line.find(" FIRST") != std::string::npos;
-            std::sscanf(gcode_line.c_str() + 1 + Toolchange_Prime_Start_Tag.size(), " T%d P%d L%f", &next, &prev, &max_length);
+            // L and M: the maximum and minimum prime lengths in mm, already converted from the volume settings for this tool's filament.
+            if (std::sscanf(gcode_line.c_str() + 1 + Toolchange_Prime_Start_Tag.size(), " T%d P%d L%f M%f", &next, &prev, &max_length, &tag_min_length) < 4)
+                tag_min_length = max_length;
             const float now = export_lines.get_normal_time();
             if (prev >= 0) {
                 if (tool_parked_since.size() <= size_t(prev))
@@ -4673,7 +4673,7 @@ void GCodeProcessor::run_post_process()
                 idle        = after_pause ? std::numeric_limits<float>::max() : now - tool_parked_since[next];
             }
             // A step, not a ramp: a nozzle that has cooled on standby needs the full prime, a hot one only the minimum.
-            const float min_length = std::clamp(m_toolchange_prime_length_min, 0.0f, max_length);
+            const float min_length = std::clamp(tag_min_length, 0.0f, max_length);
             const float length     = idle >= m_toolchange_prime_idle_time ? max_length : min_length;
             in_toolchange_prime    = true;
             // The idle rule wins over the skip rule, as in the printer's macro: a park long enough for the full prime is never skipped.

@@ -3064,8 +3064,8 @@ void TabPrint::build()
 
         optgroup = page->new_optgroup(L("Tool change priming"), L"param_flush");
         optgroup->append_single_option_line("toolchange_prime_enable");
-        optgroup->append_single_option_line("toolchange_prime_length_min");
-        optgroup->append_single_option_line("toolchange_prime_length_max");
+        optgroup->append_single_option_line("toolchange_prime_volume_min");
+        optgroup->append_single_option_line("toolchange_prime_volume_max");
         optgroup->append_single_option_line("toolchange_prime_idle_time");
         optgroup->append_single_option_line("toolchange_prime_skip_time");
         optgroup->append_single_option_line("toolchange_prime_on_printer");
