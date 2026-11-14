@@ -5335,27 +5335,31 @@ void PrintConfigDef::init_fff_params()
     def->mode = comAdvanced;
     def->set_default_value(new ConfigOptionBool(false));
 
-    def = this->add("toolchange_prime_length_min", coFloat);
-    def->label = L("Minimum prime length");
+    // Volumes, like the prime tower's prime_volume, so the two ways to prime can be compared.
+    // GCode.cpp converts them to filament lengths by each tool's filament diameter.
+    def = this->add("toolchange_prime_volume_min", coFloat);
+    def->label = L("Minimum prime volume");
     def->category = L("Tool change priming");
-    def->tooltip = L("Filament length primed by the tool change prime G-code when the new tool was parked only briefly. "
-                     "The nozzle is still hot, so this only rebuilds the pressure in it.");
-    def->sidetext = "mm";
+    def->tooltip = L("Volume of filament primed by the tool change prime G-code when the new tool was parked only briefly. "
+                     "The nozzle is still hot, so this only rebuilds the pressure in it. "
+                     "This is a volume, like the prime tower's prime volume: 24 mm³ is about 10 mm of 1.75 mm filament.");
+    def->sidetext = u8"mm³"; // cubic milimeters, don't need translation
     def->min = 0;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(10.));
+    def->set_default_value(new ConfigOptionFloat(24.));
 
-    def = this->add("toolchange_prime_length_max", coFloat);
-    def->label = L("Maximum prime length");
+    def = this->add("toolchange_prime_volume_max", coFloat);
+    def->label = L("Maximum prime volume");
     def->category = L("Tool change priming");
-    def->tooltip = L("Filament length primed after the new tool has been parked for at least the idle time, or the first time it is used. "
+    def->tooltip = L("Volume of filament primed after the new tool has been parked for at least the idle time, or the first time it is used. "
                      "By then the nozzle has cooled down on standby, so the filament in it is purged. "
-                     "A tool that was parked across a pause or filament change always gets this length, "
-                     "because the slicer cannot know how long the pause lasted.");
-    def->sidetext = "mm";
+                     "A tool that was parked across a pause or filament change always gets this volume, "
+                     "because the slicer cannot know how long the pause lasted. "
+                     "This is a volume, like the prime tower's prime volume: 48 mm³ is about 20 mm of 1.75 mm filament.");
+    def->sidetext = u8"mm³"; // cubic milimeters, don't need translation
     def->min = 0;
     def->mode = comAdvanced;
-    def->set_default_value(new ConfigOptionFloat(20.));
+    def->set_default_value(new ConfigOptionFloat(48.));
 
     def = this->add("toolchange_prime_idle_time", coFloat);
     def->label = L("Idle time for maximum prime");
@@ -7897,6 +7901,17 @@ void PrintConfigDef::handle_legacy(t_config_option_key &opt_key, std::string &va
         opt_key = "prime_tower_width";
     } else if (opt_key == "wiping_volume") {
         opt_key = "prime_volume";
+    } else if (opt_key == "toolchange_prime_length_min" || opt_key == "toolchange_prime_length_max") {
+        // The tool change prime used to be a filament length in mm. It is now a volume in mm³, like prime_volume.
+        // The filament diameter is not known here, so convert as 1.75 mm filament (all the U1 takes).
+        opt_key = opt_key == "toolchange_prime_length_min" ? "toolchange_prime_volume_min" : "toolchange_prime_volume_max";
+        try {
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), "%.2f", std::stod(value) * PI * 0.875 * 0.875);
+            value = buf;
+        } catch (const std::exception&) {
+            opt_key.clear(); // not a number: fall back to the default volume
+        }
     }
     else if (opt_key == "wipe_tower_brim_width") {
         opt_key = "prime_tower_brim_width";
@@ -9527,7 +9542,7 @@ static std::map<t_custom_gcode_key, t_config_option_keys> s_CustomGcodeSpecificP
                                "travel_point_1_x", "travel_point_1_y", "travel_point_2_x", "travel_point_2_y", "travel_point_3_x",
                                "travel_point_3_y", "x_after_toolchange", "y_after_toolchange", "z_after_toolchange", "next_wipe_x", "next_wipe_y"}},
     {"toolchange_prime_gcode",      {"layer_num", "layer_z", "max_layer_z", "next_extruder", "previous_extruder", "new_filament_temp",
-                               "prime_length", "prime_speed", "prime_first_use", "retract_restore_length"}},
+                               "prime_length", "prime_length_min", "prime_speed", "prime_first_use", "retract_restore_length"}},
     {"change_extrusion_role_gcode", {"layer_num", "layer_z", "extrusion_role", "last_extrusion_role"}},
     {"printing_by_object_gcode",    {}},
     {"machine_pause_gcode",         {}},
@@ -9596,7 +9611,10 @@ CustomGcodeSpecificConfigDef::CustomGcodeSpecificConfigDef()
     new_def("next_wipe_y", coFloat, "Next Wipe Y", "For Snapmaker Artision, next y after toolchange");
 
 // toolchange_prime_gcode
-    new_def("prime_length", coFloat, "Prime length", "Maximum filament length to prime the new tool, in mm. Extrusions in the tool change prime G-code are scaled down by the estimated time the tool was parked.");
+    new_def("prime_length", coFloat, "Prime length", "Maximum filament length to prime the new tool, in mm: the maximum prime volume divided by the cross-section of the tool's filament. "
+            "Extrusions in the tool change prime G-code are scaled down by the estimated time the tool was parked.");
+    new_def("prime_length_min", coFloat, "Minimum prime length", "Filament length to prime the new tool after a short park, in mm: the minimum prime volume divided by the cross-section of the tool's filament. "
+            "For a printer macro that sizes the prime itself.");
     new_def("prime_speed", coFloat, "Prime speed", "Extrusion feed rate for priming the new tool, in mm/min, limited by the filament's maximum volumetric speed.");
     new_def("prime_first_use", coBool, "First use of the tool", "True when the new tool is used for the first time in this print.");
     new_def("retract_restore_length", coFloat, "Retraction to restore", "Filament length the new tool is still retracted by, in mm. "

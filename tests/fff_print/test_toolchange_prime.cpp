@@ -29,7 +29,7 @@ struct PrimeBlock
 std::vector<PrimeBlock> prime_blocks(const std::string& gcode)
 {
     std::vector<PrimeBlock> blocks;
-    std::regex  start(";" + GCodeProcessor::Toolchange_Prime_Start_Tag + " T\\d+ P\\d+ L[0-9.]+( FIRST)?.*");
+    std::regex  start(";" + GCodeProcessor::Toolchange_Prime_Start_Tag + " T\\d+ P\\d+ L[0-9.]+ M[0-9.]+( FIRST)?.*");
     // The processor drops a feedrate equal to the previous line's.
     std::regex  move("(; )?G1 E([0-9.]+)( F300)? ; prime");
     std::regex  restore("G1 E([0-9.]+)( F300)? ; restore retraction");
@@ -52,6 +52,9 @@ std::vector<PrimeBlock> prime_blocks(const std::string& gcode)
     return blocks;
 }
 
+// Cross-section of 1.75 mm filament: the prime settings are volumes, the G-code extrudes lengths.
+const double filament_area_175 = PI * 0.875 * 0.875;
+
 DynamicPrintConfig two_tool_config()
 {
     DynamicPrintConfig config = default_print_config();
@@ -68,8 +71,8 @@ DynamicPrintConfig two_tool_config()
         { "toolchange_prime_gcode",       "G1 E{retract_restore_length} F300 ; restore retraction\nG1 E{prime_length} F300 ; prime\n" },
         { "retract_length_toolchange",    "10,10" },
         { "retraction_length",            "1,1" },
-        { "toolchange_prime_length_min",  1 },
-        { "toolchange_prime_length_max",  10 },
+        { "toolchange_prime_volume_min",  1. * filament_area_175 },  // 1 mm of filament
+        { "toolchange_prime_volume_max",  10. * filament_area_175 }, // 10 mm of filament
         { "toolchange_prime_idle_time",   36000 },
         { "toolchange_prime_skip_time",   0 },
     });
@@ -103,6 +106,28 @@ TEST_CASE("Tool change prime is a step by idle time", "[ToolchangePrime]")
         for (const PrimeBlock& block : blocks)
             REQUIRE_THAT(block.e, Catch::Matchers::WithinAbs(10., 1e-3));
     }
+}
+
+TEST_CASE("Tool change prime volume is converted by the tool's filament diameter", "[ToolchangePrime]")
+{
+    DynamicPrintConfig config = two_tool_config();
+    // The same volumes are a shorter length of thicker filament.
+    config.set_deserialize_strict({{ "filament_diameter", "2.85,2.85" }});
+    const double area_285 = PI * 1.425 * 1.425;
+    std::vector<PrimeBlock> blocks = prime_blocks(slice({TestMesh::cube_20x20x20}, config));
+    REQUIRE(blocks.size() > 2);
+    for (const PrimeBlock& block : blocks)
+        REQUIRE_THAT(block.e, Catch::Matchers::WithinAbs((block.first_use ? 10. : 1.) * filament_area_175 / area_285, 1e-3));
+}
+
+TEST_CASE("Legacy tool change prime lengths load as volumes", "[ToolchangePrime]")
+{
+    // Presets saved before the settings became volumes hold filament lengths in mm, converted as 1.75 mm filament.
+    DynamicPrintConfig config = default_print_config();
+    config.set_deserialize_strict({{ "toolchange_prime_length_min", 10 }, { "toolchange_prime_length_max", 20 }});
+    CHECK_THAT(config.opt_float("toolchange_prime_volume_min"), Catch::Matchers::WithinAbs(10. * filament_area_175, 0.01));
+    CHECK_THAT(config.opt_float("toolchange_prime_volume_max"), Catch::Matchers::WithinAbs(20. * filament_area_175, 0.01));
+    CHECK_FALSE(config.has("toolchange_prime_length_min"));
 }
 
 TEST_CASE("Tool change prime restores the retraction in the chute", "[ToolchangePrime]")
@@ -280,6 +305,23 @@ TEST_CASE("Tool change prime is left to the printer when timed on the printer", 
     }
     CHECK(calls > 2);
     CHECK(first_uses == 1);
+}
+
+TEST_CASE("Tool change prime G-code gets the minimum and maximum lengths in mm", "[ToolchangePrime]")
+{
+    DynamicPrintConfig config = two_tool_config();
+    config.set_deserialize_strict({
+        { "toolchange_prime_on_printer", true },
+        { "toolchange_prime_gcode",      "PRIME_TEST MIN={prime_length_min} MAX={prime_length} ; restore retraction\n" },
+    });
+    std::string gcode = slice({TestMesh::cube_20x20x20}, config);
+    std::regex  call("PRIME_TEST MIN=([0-9.]+) MAX=([0-9.]+)");
+    size_t      calls = 0;
+    for (auto it = std::sregex_iterator(gcode.begin(), gcode.end(), call); it != std::sregex_iterator(); ++it, ++calls) {
+        CHECK_THAT(std::stod((*it)[1].str()), Catch::Matchers::WithinAbs(1., 1e-3));
+        CHECK_THAT(std::stod((*it)[2].str()), Catch::Matchers::WithinAbs(10., 1e-3));
+    }
+    CHECK(calls > 2);
 }
 
 TEST_CASE("U1 tool change prime ends like the stock pre-extrusion", "[ToolchangePrime]")

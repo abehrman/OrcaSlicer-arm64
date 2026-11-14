@@ -9361,7 +9361,16 @@ std::string GCode::set_extruder(unsigned int extruder_id, double print_z, bool b
         // The tool being parked has been printing (the start G-code primed the first one), so it is no longer a first use.
         m_toolchange_primed_extruders[previous_extruder_id] = true;
         const bool  first_use    = !m_toolchange_primed_extruders[extruder_id];
-        const float prime_length = float(std::max(m_config.toolchange_prime_length_min.value, m_config.toolchange_prime_length_max.value));
+        // The settings are volumes (mm³), like the prime tower's prime_volume. G-code extrudes filament lengths,
+        // so convert by the new tool's filament cross-section, rounded to a micron to keep the G-code short.
+        const double filament_area = PI * sqr(0.5 * m_config.filament_diameter.get_at(extruder_id));
+        auto         volume_to_length = [filament_area](double volume) {
+            return filament_area > 0. ? float(std::round(1000. * std::max(0., volume) / filament_area) / 1000.) : 0.f;
+        };
+        const float length_min_setting = volume_to_length(m_config.toolchange_prime_volume_min.value);
+        const float length_max_setting = volume_to_length(m_config.toolchange_prime_volume_max.value);
+        const float prime_length       = std::max(length_min_setting, length_max_setting);
+        const float prime_length_min   = std::min(length_min_setting, length_max_setting);
         m_toolchange_primed_extruders[extruder_id] = true;
 
         DynamicConfig prime_config;
@@ -9372,6 +9381,11 @@ std::string GCode::set_extruder(unsigned int extruder_id, double print_z, bool b
         prime_config.set_key_value("next_extruder", new ConfigOptionInt(static_cast<int>(extruder_id)));
         prime_config.set_key_value("new_filament_temp", new ConfigOptionInt(new_filament_temp));
         prime_config.set_key_value("prime_length", new ConfigOptionFloat(prime_length));
+        prime_config.set_key_value("prime_length_min", new ConfigOptionFloat(prime_length_min));
+        // The settings were lengths before they were volumes. Keep their old names working as lengths in mm,
+        // so printer profiles and macro calls written for them (MIN=[toolchange_prime_length_min]) are unchanged.
+        prime_config.set_key_value("toolchange_prime_length_min", new ConfigOptionFloat(length_min_setting));
+        prime_config.set_key_value("toolchange_prime_length_max", new ConfigOptionFloat(length_max_setting));
         prime_config.set_key_value("prime_speed", new ConfigOptionFloat(float(new_filament_e_feedrate)));
         prime_config.set_key_value("prime_first_use", new ConfigOptionBool(first_use));
         prime_config.set_key_value("retract_restore_length", new ConfigOptionFloat(m_writer.extruder() ? m_writer.extruder()->retracted() : 0.));
@@ -9382,8 +9396,9 @@ std::string GCode::set_extruder(unsigned int extruder_id, double print_z, bool b
             gcode += prime_gcode;
         } else {
             char tag[128];
-            std::snprintf(tag, sizeof(tag), ";%s T%u P%d L%.3f%s\n", GCodeProcessor::Toolchange_Prime_Start_Tag.c_str(), extruder_id,
-                          previous_extruder_id, prime_length, first_use ? " FIRST" : "");
+            // L and M are the maximum and minimum prime lengths in mm for this tool's filament.
+            std::snprintf(tag, sizeof(tag), ";%s T%u P%d L%.3f M%.3f%s\n", GCodeProcessor::Toolchange_Prime_Start_Tag.c_str(), extruder_id,
+                          previous_extruder_id, prime_length, prime_length_min, first_use ? " FIRST" : "");
             gcode += tag;
             gcode += prime_gcode;
             gcode += ";" + GCodeProcessor::Toolchange_Prime_End_Tag + "\n";
