@@ -4,6 +4,9 @@ Snapmaker Orca is a powerful open source slicer for FFF (FDM) 3D Printers. This 
 
 The Wiki is work in progress so bear with us while we get it up and running!
 
+<a id="process-settings"></a>
+<a id="support-settings"></a>
+<a id="others-settings"></a>
 ## Print Settings, Tips and Tricks (Work In Progress)
 The below sections provide a detailed settings explanation as well as tips and tricks in setting these for optimal print results.
 
@@ -11,11 +14,12 @@ The below sections provide a detailed settings explanation as well as tips and t
 - [Layer Height Settings](quality_settings_layer_height)
 - [Line Width Settings](quality_settings_line_width)
 - [Seam Settings](quality_settings_seam)
-- [Precise wall](Precise-wall)
+- [Precise wall](quality_settings_precision#precise-wall)
 
 ### Speed Settings
-- [Extrusion rate smoothing](extrusion-rate-smoothing)
+- [Extrusion rate smoothing](speed_settings_advanced)
 
+<a id="material-settings"></a>
 ### Multi material
 - [Single Extruder Multimaterial](semm)
 
@@ -27,10 +31,15 @@ The below sections provide a detailed settings explanation as well as tips and t
 - [Using different bed types in Orca](bed-types)
 - [Pellet Printers (pellet flow coefficient)](pellet-flow-coefficient)
 
+<a id="calibrations"></a>
 ## Printer Calibration
 The guide below takes you through the key calibration tests in Orca - flow rate, pressure advance, print temperature, retraction, tolerances and maximum volumetric speed
 - [Calibration Guide](./Calibration)
-- [Adaptive Pressure Advance Guide](adaptive-pressure-advance)
+- [Adaptive Pressure Advance Guide](adaptive-pressure-advance-calib)
+
+<a id="prepare"></a>
+## Prepare
+- [STL Transformation](stl-transformation)
 
 ## Developer Section
 - [How to build Orca Slicer](./How-to-build)
