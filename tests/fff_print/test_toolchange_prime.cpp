@@ -324,6 +324,21 @@ TEST_CASE("Tool change prime G-code gets the minimum and maximum lengths in mm",
     CHECK(calls > 2);
 }
 
+TEST_CASE("Old tool change prime length names still give short lengths in mm", "[ToolchangePrime]")
+{
+    // Printer profiles written before the settings became volumes pass these names to the printer's macro.
+    DynamicPrintConfig config = two_tool_config();
+    config.set_deserialize_strict({
+        { "toolchange_prime_on_printer", true },
+        { "toolchange_prime_volume_min", 24 },
+        { "toolchange_prime_volume_max", 48 },
+        { "toolchange_prime_gcode",      "PRIME_TEST MIN=[toolchange_prime_length_min] MAX=[toolchange_prime_length_max] ; restore retraction\n" },
+    });
+    std::string gcode = slice({TestMesh::cube_20x20x20}, config);
+    // 24 and 48 mm³ of 1.75 mm filament, rounded to a micron and printed without float noise.
+    CHECK(gcode.find("PRIME_TEST MIN=9.978 MAX=19.956 ") != std::string::npos);
+}
+
 TEST_CASE("U1 tool change prime ends like the stock pre-extrusion", "[ToolchangePrime]")
 {
     // The strand only comes off the nozzle reliably with the stock tail: full fan for 5 s, the cutter, the ACTION=4 wipe

@@ -9365,12 +9365,13 @@ std::string GCode::set_extruder(unsigned int extruder_id, double print_z, bool b
         // so convert by the new tool's filament cross-section, rounded to a micron to keep the G-code short.
         const double filament_area = PI * sqr(0.5 * m_config.filament_diameter.get_at(extruder_id));
         auto         volume_to_length = [filament_area](double volume) {
-            return filament_area > 0. ? float(std::round(1000. * std::max(0., volume) / filament_area) / 1000.) : 0.f;
+            return filament_area > 0. ? std::round(1000. * std::max(0., volume) / filament_area) / 1000. : 0.;
         };
-        const float length_min_setting = volume_to_length(m_config.toolchange_prime_volume_min.value);
-        const float length_max_setting = volume_to_length(m_config.toolchange_prime_volume_max.value);
-        const float prime_length       = std::max(length_min_setting, length_max_setting);
-        const float prime_length_min   = std::min(length_min_setting, length_max_setting);
+        // Doubles, not floats: a float widened into a ConfigOptionFloat would print as 9.97799968719482.
+        const double length_min_setting = volume_to_length(m_config.toolchange_prime_volume_min.value);
+        const double length_max_setting = volume_to_length(m_config.toolchange_prime_volume_max.value);
+        const double prime_length       = std::max(length_min_setting, length_max_setting);
+        const double prime_length_min   = std::min(length_min_setting, length_max_setting);
         m_toolchange_primed_extruders[extruder_id] = true;
 
         DynamicConfig prime_config;
